@@ -6,7 +6,7 @@ A multi-agent question-answering system over neurodevelopmental research literat
 
 ![NeuroEvidence query pipeline](docs/pipeline_diagram.png)
 
-Every agent runs on GPT-4o at temperature 0 — including the writer, moved off an original 0.2 after real testing showed the higher temperature let it embellish thin citations with uncited specifics. No agent selects a tool or decides what runs next; the pipeline itself is plain code.
+Every agent runs on GPT4o at temperature 0 — including the writer, moved off an original 0.2 after real testing showed the higher temperature let it embellish thin citations with uncited specifics. No agent selects a tool or decides what runs next; the pipeline itself is plain code.
 
 A pre-built literature corpus isn't affordable at the current budget, so retrieval checks what's already known first, and only searches PubMed live — cheaply ingesting (fetch, chunk, embed) everything found — when coverage is thin. The expensive classify-and-audit step then runs only on the papers that survive reranking as actually relevant, never on every paper a search happens to return.
 
