@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass, field
 
 from neurodiversity import community_accounts, console_log as log
-from neurodiversity import practical_resources
+from neurodiversity import crisis_resources, practical_resources
 from neurodiversity.agents import broadener, citation_checker, general_chat, greeter, reranker, scope_guard, translator, writer
 from neurodiversity.query import evidence_grade, live_search, ranking, retrieval
 
@@ -98,7 +98,7 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
     if classification == "diagnostic_ask":
         return TurnResult(terminal_state="refused")
     if classification == "distress":
-        return TurnResult(terminal_state="distress")
+        return TurnResult(terminal_state="distress", resources=crisis_resources.RESOURCES)
     if classification == "practical_support":
         topic = scope.output.practical_topic.value if scope.output.practical_topic else None
         log.sub(f"practical_topic={topic!r}")
@@ -107,8 +107,12 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
         reply = greeter.greet()
         return TurnResult(terminal_state="greeting", prose=reply.output.message)
     if classification == "out_of_domain":
-        chat = general_chat.reply(raw_input)
-        return TurnResult(terminal_state="out_of_scope", prose=chat.output.message)
+        chat = general_chat.reply(raw_input, context_summary, recent_turns)
+        # Persisted under the same "research_query" key the research path uses so
+        # _get_session_context (api/routes/sessions.py) picks up chit-chat exchanges into
+        # the same memory window — recent_turns was never meant to be research-only, that
+        # was just the first path that needed it.
+        return TurnResult(terminal_state="out_of_scope", prose=chat.output.message, debug={"research_query": chat.output.topic})
 
     trans = translator.translate(raw_input, context_summary, recent_turns)
     if trans.output.needs_clarification:

@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from neurodiversity.agents.base import AgentResult, run_agent
 
-PROMPT_VERSION = "v5"
+PROMPT_VERSION = "v6"
 
 SYSTEM_PROMPT = """Classify this message into exactly one category:
 
@@ -55,7 +55,12 @@ SYSTEM_PROMPT = """Classify this message into exactly one category:
   decision, not a request to be diagnosed).
 - distress: contains indicators of self-harm risk, acute hopelessness, or crisis-level
   language — not ordinary frustration, sadness, or the kind of exhaustion that is itself a
-  valid research topic (e.g., autistic burnout).
+  valid research topic (e.g., autistic burnout). A plain statement of an ordinary sad
+  event, with no crisis language attached, is not distress even when the word "lost" or
+  similar appears — e.g. "I just lost my cat" is sad, but it is not self-harm risk, acute
+  hopelessness, or crisis language; it is out_of_domain (unrelated to neurodevelopmental
+  conditions) unless something else in the message connects it to one. Reserve distress
+  for language that actually signals danger to the person, not for sadness alone.
 - practical_support: a real, practical need connected to being autistic/ADHD/dyslexic/
   dyspraxic/having Tourette's that is NOT researchable against the literature and NOT a
   request for diagnosis — workplace rights or discrimination, harassment, education

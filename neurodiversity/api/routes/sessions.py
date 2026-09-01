@@ -201,6 +201,8 @@ def _persist_and_build_response(db, session_id: str, result):
         return model(message=result.prose)
     if result.terminal_state == "needs_clarification":
         return model(clarifying_question=result.prose, options=result.clarification_options)
+    if result.terminal_state == "distress":
+        return model(resources=result.resources)
     return model()
 
 

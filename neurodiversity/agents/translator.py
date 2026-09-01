@@ -87,8 +87,11 @@ def translate(raw_input: str, context_summary: str = "", recent_turns: list[tupl
         if context_summary:
             context_block += f"Summary of earlier conversation: {context_summary}\n\n"
         if recent_turns:
+            # recent_turns isn't research-only — chit-chat turns (agents/general_chat.py)
+            # share this same memory window and have no separate reflection, just a topic
+            # label in the first slot, so r can legitimately be None or equal to q.
             context_block += "Recent exchanges:\n" + "\n".join(
-                f"- research_query: {q}\n  reflection: {r}" for q, r in recent_turns
+                f"- {q}" + (f" ({r})" if r and r != q else "") for q, r in recent_turns
             ) + "\n\n"
         user_message = f"{context_block}New message: {raw_input}"
 

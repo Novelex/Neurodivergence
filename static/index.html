@@ -128,7 +128,7 @@ function appendLoading() {
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
           </svg>
-          <span>researching… <span class="elapsed">0s</span></span>
+          <span>processing… <span class="elapsed">0s</span></span>
         </div>
         <div class="progress-lines space-y-1 mt-2"></div>
       </div>
@@ -198,6 +198,7 @@ function renderResources(resources) {
            class="block bg-white border border-cyan-200 rounded-lg px-3 py-2 hover:bg-cyan-50 transition">
           <p class="font-medium text-cyan-800 text-xs">${escapeHtml(r.name)}</p>
           <p class="text-slate-500 text-xs mt-0.5">${escapeHtml(r.description)}</p>
+          ${r.contact ? `<p class="text-cyan-700 text-xs mt-0.5 font-medium">${escapeHtml(r.contact)}</p>` : ""}
         </a>
       `).join("")}
     </div>
@@ -297,7 +298,12 @@ function appendAnsweredMessage(data) {
 
 function appendStateMessage(state, data) {
   const style = STATE_STYLE[state] || { bg: "bg-slate-100 border-slate-200 text-slate-600", icon: "•" };
-  const bodyText = data.message || data.clarifying_question || "";
+  // Distress copy is a known placeholder — the working spec explicitly flags that real
+  // crisis-response copy needs its own drafting and review, not text inherited from
+  // wherever else in this file. This line exists only so the resources aren't shown with
+  // nothing introducing them; it is not a substitute for that review.
+  const bodyText = data.message || data.clarifying_question
+    || (state === "distress" ? "If you need to talk to someone right now, real support is available:" : "");
   const node = el(`
     <div class="msg-enter flex justify-start">
       <div class="border rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[85%] text-sm ${style.bg}">
@@ -308,6 +314,15 @@ function appendStateMessage(state, data) {
             <p>${escapeHtml(bodyText)}</p>
             ${renderResources(data.resources)}
             ${renderCommunityCorroboration(data.community_corroboration)}
+            ${data.followup_prompt ? `
+              <div class="mt-3 pt-2 border-t border-purple-200">
+                <p class="text-xs mb-1.5">${escapeHtml(data.followup_prompt)}</p>
+                <div class="flex flex-wrap gap-2 clarification-options">
+                  <button type="button" class="option-btn text-xs px-3 py-1.5 rounded-full border border-purple-300 bg-white text-purple-800 hover:bg-purple-100 disabled:opacity-40 disabled:cursor-not-allowed transition">Yes, please</button>
+                  <button type="button" class="option-btn text-xs px-3 py-1.5 rounded-full border border-purple-300 bg-white text-purple-800 hover:bg-purple-100 disabled:opacity-40 disabled:cursor-not-allowed transition">No thanks</button>
+                </div>
+              </div>
+            ` : ""}
             ${data.options && data.options.length ? `
               <div class="mt-2 flex flex-wrap gap-2 clarification-options">
                 ${data.options.map(o => `
