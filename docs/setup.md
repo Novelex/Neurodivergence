@@ -72,6 +72,23 @@ SUPABASE_SERVICE_ROLE_KEY=
 
 ---
 
+## 6. Deploying to Vercel
+
+Vercel doesn't run a persistent `uvicorn` process the way local dev does — `api/index.py` re-exports the FastAPI app as a serverless function, and `vercel.json` routes every path to it. Real trade-offs of this target, not glossed over:
+
+- **The live progress-line UI probably won't show.** `/sessions/{id}/turns/stream` (Server-Sent Events) needs chunked-streaming support Vercel's Python runtime doesn't reliably have. The frontend detects this and falls back to the plain `/turns` endpoint automatically — the app still works, it just answers with a spinner instead of live stage-by-stage progress on this deployment.
+- **Turn duration vs. plan limits.** `vercel.json` requests `maxDuration: 300` (5 minutes) for the function — turns that trigger a live PubMed search plus retries can take that long. Check this against your actual Vercel plan's function-duration limit before relying on it; it may need lowering (or may not be available at all) depending on your plan.
+- **No local `.env` file on Vercel.** Every variable in the `.env` template below (§5) must instead be set as an Environment Variable in the Vercel project dashboard (Settings → Environment Variables) — pydantic-settings reads them the same way either source, so no code change is needed, just re-entering the same values there.
+
+Steps:
+1. Push this repo to GitHub (or your Vercel-connected git provider).
+2. In Vercel: New Project → import the repo → it should auto-detect `vercel.json`.
+3. Add every variable from §5's `.env` template as an Environment Variable before the first deploy — a missing key fails closed (empty string default), which `/health`'s `api_keys_configured` will show as `false` for whichever key is missing.
+4. Deploy. Check `https://<your-project>.vercel.app/health` first — confirms the function is running and every key loaded, before testing a real turn.
+5. `psycopg` was removed from this project's dependencies (unused — never actually imported anywhere) specifically to keep the serverless function bundle smaller; nothing about Supabase access depends on it, since the app only ever talks to Supabase over its REST API.
+
+---
+
 ## What's still not covered here
 
 This checklist gets accounts and keys in hand — it does not replace the §13.1 gold-answer exercise, which the working spec treats as the mandatory first step before any pipeline code, regardless of how much infrastructure is ready.

@@ -372,6 +372,70 @@ chatLog.addEventListener("click", (e) => {
   }
 });
 
+// Returns {finalData, errorMessage} on success, or null if streaming itself didn't work
+// (bad response, connection error, or the stream closed with no events at all — the
+// signature of a host that accepts the request but doesn't actually support chunked
+// streaming, e.g. Vercel's Python serverless runtime). null means "fall back to plain".
+async function runTurnStreaming(text, loading) {
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/sessions/${sessionId}/turns/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raw_input: text }),
+    });
+  } catch {
+    return null;
+  }
+  if (!res.ok || !res.body) return null;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalData = null;
+  let errorMessage = null;
+  let sawAnyEvent = false;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop(); // last chunk may be incomplete — keep it for next read
+
+      for (const raw of events) {
+        if (!raw.startsWith("data: ")) continue;
+        sawAnyEvent = true;
+        const event = JSON.parse(raw.slice(6));
+        if (event.type === "result") {
+          finalData = event.data;
+        } else if (event.type === "error") {
+          errorMessage = event.message;
+        } else {
+          const described = describeProgressEvent(event);
+          if (described) addProgressLine(loading, described.text, described.kind);
+        }
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  if (!sawAnyEvent) return null; // host silently didn't stream anything — fall back
+  return { finalData, errorMessage };
+}
+
+async function runTurnPlain(text) {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/turns`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ raw_input: text }),
+  });
+  if (!res.ok) return { finalData: null, errorMessage: `Request failed (HTTP ${res.status}).` };
+  return { finalData: await res.json(), errorMessage: null };
+}
+
 composer.addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = rawInput.value.trim();
@@ -384,59 +448,24 @@ composer.addEventListener("submit", async (e) => {
 
   const loading = appendLoading();
   try {
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/turns/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ raw_input: text }),
-    });
-
-    if (!res.ok || !res.body) {
-      loading.stop();
-      loading.node.remove();
-      appendSystemError(`Request failed (HTTP ${res.status}).`);
-      return;
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let finalData = null;
-    let errorMessage = null;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split("\n\n");
-      buffer = events.pop(); // last chunk may be incomplete — keep it for next read
-
-      for (const raw of events) {
-        if (!raw.startsWith("data: ")) continue;
-        const event = JSON.parse(raw.slice(6));
-        if (event.type === "result") {
-          finalData = event.data;
-        } else if (event.type === "error") {
-          errorMessage = event.message;
-        } else {
-          const described = describeProgressEvent(event);
-          if (described) addProgressLine(loading, described.text, described.kind);
-        }
-      }
+    let outcome = await runTurnStreaming(text, loading);
+    if (outcome === null) {
+      outcome = await runTurnPlain(text); // streaming unsupported here — plain request still works
     }
 
     loading.stop();
     loading.node.remove();
 
-    if (errorMessage) {
-      appendSystemError(`Something went wrong: ${errorMessage}`);
-    } else if (finalData) {
-      if (finalData.terminal_state === "answered") {
-        appendAnsweredMessage(finalData);
+    if (outcome.errorMessage) {
+      appendSystemError(`Something went wrong: ${outcome.errorMessage}`);
+    } else if (outcome.finalData) {
+      if (outcome.finalData.terminal_state === "answered") {
+        appendAnsweredMessage(outcome.finalData);
       } else {
-        appendStateMessage(finalData.terminal_state, finalData);
+        appendStateMessage(outcome.finalData.terminal_state, outcome.finalData);
       }
     } else {
-      appendSystemError("The response stream ended without a result.");
+      appendSystemError("No response came back — please try again.");
     }
   } catch (err) {
     loading.stop();
