@@ -76,16 +76,19 @@ SUPABASE_SERVICE_ROLE_KEY=
 
 Vercel doesn't run a persistent `uvicorn` process the way local dev does — `api/index.py` re-exports the FastAPI app as a serverless function, and `vercel.json` routes every path to it. Real trade-offs of this target, not glossed over:
 
-- **The live progress-line UI probably won't show.** `/sessions/{id}/turns/stream` (Server-Sent Events) needs chunked-streaming support Vercel's Python runtime doesn't reliably have. The frontend detects this and falls back to the plain `/turns` endpoint automatically — the app still works, it just answers with a spinner instead of live stage-by-stage progress on this deployment.
-- **Turn duration vs. plan limits.** `vercel.json` requests `maxDuration: 300` (5 minutes) for the function — turns that trigger a live PubMed search plus retries can take that long. Check this against your actual Vercel plan's function-duration limit before relying on it; it may need lowering (or may not be available at all) depending on your plan.
+- **Every API route lives under `/api`** (`/api/health`, `/api/sessions`, `/api/papers/{id}`) — not for clean-URL reasons, but because real deployment testing showed the modern `rewrites` config doesn't forward the true original request path into the Python function (every request arrived at the app as the literal string `/api/index`, confirmed via Vercel's own request logs — universal 404 regardless of what was actually visited). `vercel.json` uses the older `builds`/`routes` config instead specifically because it does forward the real path correctly; this is the standard pattern real FastAPI-on-Vercel templates use for exactly this reason. Local dev uses the same `/api` prefix so there's one behavior, not an environment-specific split.
+- **The live progress-line UI probably won't show.** `/api/sessions/{id}/turns/stream` (Server-Sent Events) needs chunked-streaming support Vercel's Python runtime doesn't reliably have. The frontend detects this and falls back to the plain `/api/sessions/{id}/turns` endpoint automatically — the app still works, it just answers with a spinner instead of live stage-by-stage progress on this deployment.
+- **Turn duration vs. plan limits.** The `builds`/`routes` config style (needed for the path-forwarding fix above) doesn't support setting `maxDuration` in `vercel.json` at all — Vercel ignores a `functions` block when `builds` is present. Turns that trigger a live PubMed search plus retries can take 60-90+ seconds; check your Vercel plan's actual function-duration limit via the dashboard (Settings → Functions, if your plan exposes it) rather than assuming a JSON setting controls it.
 - **No local `.env` file on Vercel.** Every variable in the `.env` template below (§5) must instead be set as an Environment Variable in the Vercel project dashboard (Settings → Environment Variables) — pydantic-settings reads them the same way either source, so no code change is needed, just re-entering the same values there.
+- **Root Directory must be the repository root**, not `api` — that folder only holds the function entrypoint file; `vercel.json`, `requirements.txt`, and the `neurodiversity` package all need to be visible from the actual project root.
 
 Steps:
 1. Push this repo to GitHub (or your Vercel-connected git provider).
-2. In Vercel: New Project → import the repo → it should auto-detect `vercel.json`.
-3. Add every variable from §5's `.env` template as an Environment Variable before the first deploy — a missing key fails closed (empty string default), which `/health`'s `api_keys_configured` will show as `false` for whichever key is missing.
-4. Deploy. Check `https://<your-project>.vercel.app/health` first — confirms the function is running and every key loaded, before testing a real turn.
+2. In Vercel: New Project → import the repo → it should auto-detect `vercel.json`. Confirm Settings → General → Root Directory is blank/the repo root.
+3. Add every variable from §5's `.env` template as an Environment Variable before the first deploy — a missing key fails closed (empty string default), which `/api/health`'s `api_keys_configured` will show as `false` for whichever key is missing.
+4. Deploy. Check `https://<your-project>.vercel.app/api/health` first (note the `/api` prefix) — confirms the function is running and every key loaded, before testing a real turn.
 5. `psycopg` was removed from this project's dependencies (unused — never actually imported anywhere) specifically to keep the serverless function bundle smaller; nothing about Supabase access depends on it, since the app only ever talks to Supabase over its REST API.
+6. If you still get a 404 on every route after this, check the Logs tab for the actual request path the function received (Vercel's own logs show this per-request) — that's what confirmed the original `rewrites`-based config was silently overwriting every request's path.
 
 ---
 
