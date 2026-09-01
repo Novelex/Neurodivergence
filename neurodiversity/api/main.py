@@ -17,11 +17,17 @@ from neurodiversity.config import settings
 from neurodiversity.db.client import get_service_client
 
 app = FastAPI(title="NeuroEvidence")
-app.include_router(sessions.router)
-app.include_router(papers.router)
+# Every API route lives under /api — not for clean-URL reasons, but because Vercel's
+# Python serverless runtime doesn't reliably pass the pre-rewrite original path through
+# to the ASGI app the way a plain unprefixed catch-all rewrite assumes (confirmed by real
+# deployment testing: /health 404'd with FastAPI's own "Not Found" shape, meaning the
+# request reached the app but matched no route). Prefixing here, not just in vercel.json,
+# keeps local dev and Vercel identical — one behavior, not an environment-specific split.
+app.include_router(sessions.router, prefix="/api")
+app.include_router(papers.router, prefix="/api")
 
 
-@app.get("/health", response_model=HealthResponse)
+@app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     keys_configured = {
         "ncbi_api_key": bool(settings.ncbi_api_key),
@@ -43,6 +49,6 @@ def health() -> HealthResponse:
     return HealthResponse(api_keys_configured=keys_configured, database_reachable=db_reachable)
 
 
-# Mounted last so it never shadows an API route above — anything not matched by /health,
-# /sessions/*, or /papers/* falls through to the static frontend (static/index.html).
+# Mounted last so it never shadows an API route above — anything not matched by /api/*
+# falls through to the static frontend (static/index.html).
 app.mount("/", StaticFiles(directory=Path(__file__).resolve().parents[2] / "static", html=True), name="static")
