@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from neurodiversity.agents.base import AgentResult, run_agent
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 
 SYSTEM_PROMPT = """Write a prose answer to the user's research question using only the supplied chunks below.
 The chunks are already ordered by evidential strength — do not re-rank them, re-order them,
@@ -67,7 +67,15 @@ For each factual sentence you write, also record: the sentence itself exactly as
 appears in your prose (verbatim, including its [N] marker), and the full list of quotes
 (each with its chunk_id and paper_id) that together support it — one quote if the claim
 comes from one source, more than one if it genuinely synthesizes several. The
-citation_number must match the [N] marker you placed inline in the prose for that claim."""
+citation_number must match the [N] marker you placed inline in the prose for that claim.
+
+Also write one short, separate opening sentence — plain and direct, not a factual claim,
+no citation needed or wanted. It briefly acknowledges the person's question before the
+evidence starts (e.g. "That's a reasonable thing to weigh up." or "That's worth looking
+into."). Keep it short, concrete, and non-generic to what was actually asked — avoid vague
+pleasantries, exclamation marks, or chipper filler ("Great question!"). Do not restate the
+question itself (that's already shown separately) and do not preview what the evidence
+will say — it is a brief acknowledgment, not a summary."""
 
 
 class QuoteRef(BaseModel):
@@ -83,6 +91,7 @@ class Citation(BaseModel):
 
 
 class WriterOutput(BaseModel):
+    opening: str
     prose: str
     citations: list[Citation]
 

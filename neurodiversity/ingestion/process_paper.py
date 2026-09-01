@@ -14,6 +14,7 @@ papers actually matter, which is the whole point of the split.
 import os
 from dataclasses import dataclass
 
+from neurodiversity import console_log as log
 from neurodiversity.agents.auditors import cohort, imaging, psychometric, qualitative, trial
 from neurodiversity.agents.base import AgentResult
 from neurodiversity.agents.design_classifier import classify
@@ -57,14 +58,15 @@ class IngestResult:
 
 def ingest_cheap(db, paper: Paper) -> IngestResult:
     """Phase A. No GPT-4o call. Fetch, license-gate, chunk+embed, store."""
-    print(f"\n--- [{paper.pubmed_id}] {paper.title[:70]!r} ---")
+    log.console.print()
+    log.stage("ingest", f"[{paper.pubmed_id}] {paper.title[:70]!r}", style="magenta")
 
     existing = db.table("papers").select("id").eq("pubmed_id", paper.pubmed_id).execute().data
     if existing and not os.environ.get("FORCE_REPROCESS"):
         paper_id = existing[0]["id"]
         facts = db.table("study_facts").select("design_type").eq("paper_id", paper_id).execute().data
         already_done = bool(facts and facts[0]["design_type"])
-        print(f"      already ingested{' and classified' if already_done else ''} — reusing")
+        log.sub(f"already ingested{' and classified' if already_done else ''} — reusing")
         return IngestResult(paper_id, already_done, None, "", paper.title, paper.abstract or "")
 
     full_text_result = None
@@ -81,11 +83,11 @@ def ingest_cheap(db, paper: Paper) -> IngestResult:
         if licensed_for_storage:
             paper.has_fulltext = True
             paper.full_text = full_text_result.text
-            print(f"      full text: {len(full_text_result.text)} chars, license={full_text_result.license.value}")
+            log.success(f"full text: {len(full_text_result.text)} chars, license={full_text_result.license.value}")
         else:
-            print(f"      full text fetched but license={full_text_result.license.value}: not stored (§5.1 gate)")
+            log.warn(f"full text fetched but license={full_text_result.license.value}: not stored (§5.1 gate)")
     else:
-        print("      no PMC full text available (metadata-only paper)")
+        log.sub("no PMC full text available (metadata-only paper)")
 
     usable_full_text = full_text_result.text if licensed_for_storage else None
 
@@ -102,7 +104,7 @@ def ingest_cheap(db, paper: Paper) -> IngestResult:
         ]
         db.table("chunks").delete().eq("paper_id", paper_id).execute()
         db.table("chunks").insert(chunk_rows).execute()
-        print(f"      chunks: {len(chunk_rows)} stored")
+        log.success(f"chunks: {len(chunk_rows)} stored")
 
     if licensed_for_storage and full_text_result.methods_text:
         methods_excerpt = full_text_result.methods_text[:3000]
@@ -124,7 +126,7 @@ def classify_and_audit(db, ingest_result: IngestResult) -> tuple[str, str | None
         ingest_result.title, ingest_result.abstract, ingest_result.methods_excerpt or ingest_result.abstract
     )
     design_type = classification.output.design_type
-    print(f"      design_type = {design_type.value} (model={classification.model})")
+    log.sub(f"design_type = {design_type.value} (model={classification.model})", style="magenta")
 
     db.table("study_facts").upsert(
         {"paper_id": ingest_result.paper_id, "design_type": design_type.value},
@@ -140,7 +142,7 @@ def classify_and_audit(db, ingest_result: IngestResult) -> tuple[str, str | None
             verdict: AgentResult = auditor_module.audit_field(
                 ingest_result.usable_full_text, field_row["name"], field_row["rationale"]
             )
-            print(f"      [{auditor_module.__name__.split('.')[-1]}] {field_id}: verdict = {verdict.output.verdict.value}")
+            log.sub(f"[{auditor_module.__name__.split('.')[-1]}] {field_id}: verdict = {verdict.output.verdict.value}", style="magenta")
             db.table("quality_checks").upsert(
                 {
                     "paper_id": ingest_result.paper_id,

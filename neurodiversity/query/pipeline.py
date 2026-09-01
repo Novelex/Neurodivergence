@@ -11,8 +11,9 @@ This is a real trade against §4's determinism guarantee, accepted deliberately 
 single-developer prototype at this budget — see live_search.py's docstring for the honest
 accounting of what that costs.
 
-Six terminal_state values (§8): answered, refused, out_of_scope, no_evidence, split,
-distress. This module is the state machine — no agent here decides what runs next.
+Seven terminal_state values (§8, plus practical_support): answered, refused, out_of_scope,
+no_evidence, split, distress, practical_support. This module is the state machine — no
+agent here decides what runs next.
 
 Construct disambiguation (§7.4) is not wired in — it only fires when the SQL join
 surfaces claims with divergent measure_ids, and claim extraction (agent 3) was never run
@@ -25,10 +26,13 @@ that deserves its own pass, not a stub bolted onto this proof.
 """
 
 import re
+import time
 from dataclasses import dataclass, field
 
-from neurodiversity.agents import citation_checker, reranker, scope_guard, translator, writer
-from neurodiversity.query import live_search, ranking, retrieval
+from neurodiversity import community_accounts, console_log as log
+from neurodiversity import practical_resources
+from neurodiversity.agents import citation_checker, greeter, reranker, scope_guard, translator, writer
+from neurodiversity.query import evidence_grade, live_search, ranking, retrieval
 
 MIN_CANDIDATES_FOR_ANSWER = 1
 # Below this many candidates from the existing corpus, trigger a live search rather than
@@ -36,7 +40,20 @@ MIN_CANDIDATES_FOR_ANSWER = 1
 # it yet" should mean "go find it," not "give up," given there's no pre-built corpus to
 # fall back on.
 THIN_COVERAGE_THRESHOLD = 3
-
+# Paper-count alone isn't sufficient: real testing found a query where 8 distinct papers
+# already sat in the (small, leftover-from-other-topics) local corpus, all just loosely
+# ADHD-adjacent rather than actually on-topic, so coverage looked fine by count while the
+# writer had nothing genuinely relevant to cite and produced a technically-verified but
+# substantively off-target answer. There's no labeled relevance data to calibrate this
+# against (same honest gap as every other uncalibrated threshold in this system), so this
+# is a starting heuristic, not a tuned value — and 0.5 was itself shown to be too low by
+# real testing: "cost-effectiveness of ADHD treatment options" scored 0.523 (barely over
+# 0.5), skipped live search, and produced an answer built from generically ADHD-adjacent
+# papers (treatment-access shortages, symptom variability) that never actually addressed
+# cost-effectiveness — only 1 of the 8 "distinct" papers had anything the writer could
+# genuinely use. Raised to 0.6 on that evidence; still a heuristic, not a tuned value, and
+# should keep being revisited as more real query traffic exists to check it against.
+THIN_SIMILARITY_THRESHOLD = 0.6
 
 @dataclass
 class TurnResult:
@@ -45,52 +62,95 @@ class TurnResult:
     prose: str | None = None
     citations: list = field(default_factory=list)
     evidence: dict | None = None  # counts only, never a probability — see api/schemas.py's EvidenceSummary
+    resources: list = field(default_factory=list)  # practical_support only — static table, never model output
+    community_corroboration: dict | None = None  # no_evidence only — static table, never model output (§9.1)
     debug: dict = field(default_factory=dict)
 
 
-def handle_turn(raw_input: str) -> TurnResult:
+def handle_turn(raw_input: str, context_summary: str = "", recent_turns: list[tuple[str, str]] | None = None) -> TurnResult:
+    """context_summary/recent_turns: short-term session memory (agents/summarizer.py) —
+    always already-scrubbed research_query/reflection text from earlier turns in this
+    same session, never raw_input, current or past. The caller (api/routes/sessions.py)
+    owns fetching this from the database; this module stays decoupled from the sessions/
+    turns tables, matching how every other piece of state here is passed in, not looked up."""
+    log.turn_start(raw_input)
+    started = time.monotonic()
+    result = _handle_turn(raw_input, context_summary, recent_turns or [])
+    log.turn_end(result.terminal_state, time.monotonic() - started)
+    return result
+
+
+def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[str, str]]) -> TurnResult:
     scope = scope_guard.classify(raw_input)
     classification = scope.output.classification.value
-    print(f"[scope_guard] {classification}")
+    log.stage("scope_guard", classification)
 
     if classification == "diagnostic_ask":
         return TurnResult(terminal_state="refused")
     if classification == "distress":
         return TurnResult(terminal_state="distress")
+    if classification == "practical_support":
+        topic = scope.output.practical_topic.value if scope.output.practical_topic else None
+        log.sub(f"practical_topic={topic!r}")
+        return TurnResult(terminal_state="practical_support", resources=practical_resources.for_topic(topic))
+    if classification == "greeting":
+        reply = greeter.greet()
+        return TurnResult(terminal_state="greeting", prose=reply.output.message)
     if classification == "out_of_domain":
         return TurnResult(terminal_state="out_of_scope")
 
-    trans = translator.translate(raw_input)
+    trans = translator.translate(raw_input, context_summary, recent_turns)
     research_query = trans.output.research_query
     reflection = trans.output.reflection
-    print(f"[translator] research_query={research_query!r}")
+    log.stage("translator", f"research_query={research_query!r}")
+
+    def _no_evidence() -> TurnResult:
+        # Checks research_query, never raw_input — §7.2's privacy boundary means nothing
+        # downstream of the translator ever sees raw_input, and this is no exception.
+        corroboration = community_accounts.for_query(research_query)
+        if corroboration:
+            log.sub("community corroboration matched (§9.1)", style="cyan")
+        return TurnResult(
+            terminal_state="no_evidence",
+            reflection=reflection,
+            community_corroboration=corroboration,
+            debug={"research_query": research_query},
+        )
 
     candidates = retrieval.retrieve(research_query, match_count=20)
     distinct_papers = {c.paper_id for c in candidates}
-    print(f"[retrieve] {len(candidates)} candidates from {len(distinct_papers)} distinct papers in existing corpus")
+    top_similarity = max((c.similarity for c in candidates), default=0.0)
+    log.stage("retrieve", f"{len(candidates)} candidates from {len(distinct_papers)} distinct papers (top similarity {top_similarity:.3f})", style="blue")
 
     live_contexts = {}
-    if len(distinct_papers) < THIN_COVERAGE_THRESHOLD:
-        # Coverage is measured in distinct papers, not chunk count — 20 chunks from 2
-        # papers is still thin. A synthesis answer drawn from too few sources is exactly
-        # what tempts the writer to pad a claim with real-but-uncited specifics instead
-        # of citing another paper for it, so trigger live search on paper diversity.
+    is_thin = len(distinct_papers) < THIN_COVERAGE_THRESHOLD
+    is_low_relevance = top_similarity < THIN_SIMILARITY_THRESHOLD
+    if is_thin or is_low_relevance:
+        # Coverage is measured in distinct papers AND relevance, not chunk count alone —
+        # 20 chunks from 2 papers is still thin, but so is 8 papers that are merely
+        # loosely on-topic rather than actually relevant to this specific question. A
+        # synthesis answer drawn from too few or too-tangential sources is exactly what
+        # tempts the writer to pad a claim with real-but-uncited specifics, or to answer
+        # from whatever's nearest instead of what's actually relevant — so trigger live
+        # search on either signal, not just paper count.
         # Phase A only here — cheap, no GPT-4o call. Everything found gets fetched,
         # chunked, and embedded; nothing gets classified or audited yet.
+        log.stage("live_search", f"triggering: thin={is_thin}, low_relevance={is_low_relevance}", style="magenta")
         live_contexts = live_search.ingest_cheap_for_query(research_query)
-        print(f"[live_search] cheaply ingested {len(live_contexts)} papers (not yet classified/audited)")
+        log.sub(f"cheaply ingested {len(live_contexts)} papers (not yet classified/audited)")
         if live_contexts:
             candidates = retrieval.retrieve(research_query, match_count=20)
             distinct_papers = {c.paper_id for c in candidates}
-            print(f"[retrieve] {len(candidates)} candidates from {len(distinct_papers)} distinct papers after live search")
+            top_similarity = max((c.similarity for c in candidates), default=0.0)
+            log.stage("retrieve", f"{len(candidates)} candidates from {len(distinct_papers)} distinct papers after live search (top similarity {top_similarity:.3f})", style="blue")
 
     if len(candidates) < MIN_CANDIDATES_FOR_ANSWER:
-        return TurnResult(terminal_state="no_evidence", reflection=reflection)
+        return _no_evidence()
 
     rerank_input = [{"chunk_id": c.chunk_id, "text": c.text} for c in candidates]
     reranked = reranker.rerank(research_query, rerank_input)
     ranked_ids_by_relevance = reranked.output.ranked_chunk_ids
-    print(f"[rerank] reordered {len(ranked_ids_by_relevance)} chunk_ids")
+    log.stage("rerank", f"reordered {len(ranked_ids_by_relevance)} chunk_ids", style="blue")
 
     candidates_by_id = {c.chunk_id: c for c in candidates}
     unique_paper_ids = {candidates_by_id[cid].paper_id for cid in ranked_ids_by_relevance if cid in candidates_by_id}
@@ -104,7 +164,7 @@ def handle_turn(raw_input: str) -> TurnResult:
 
     paper_ranks = ranking.rank(list(unique_paper_ids))
     paper_rank_order = {row["paper_id"]: i for i, row in enumerate(paper_ranks)}
-    print(f"[rank] {len(paper_ranks)} papers ranked")
+    log.stage("rank", f"{len(paper_ranks)} papers ranked", style="blue")
 
     ranked_chunks = sorted(
         (candidates_by_id[cid] for cid in ranked_ids_by_relevance if cid in candidates_by_id),
@@ -115,9 +175,10 @@ def handle_turn(raw_input: str) -> TurnResult:
     ]
 
     draft = writer.write(research_query, writer_input)
+    opening = draft.output.opening
     prose = draft.output.prose
     citations = draft.output.citations
-    print(f"[writer] {len(citations)} citations")
+    log.stage("writer", f"{len(citations)} citations", style="green")
 
     def _render_prose(ordered_citations: list) -> str:
         """Build the displayed answer text directly from verified citations rather than
@@ -137,17 +198,27 @@ def handle_turn(raw_input: str) -> TurnResult:
         return " ".join(sentences)
 
     def _build_answered(verified_citations: list) -> TurnResult:
-        prose_text = _render_prose(verified_citations)
+        if not verified_citations:
+            # A writer draft with zero citations trivially has zero flags to check, so
+            # without this guard it would fall straight through as "answered" with empty
+            # prose and an empty citations list — an answer that looks like success but
+            # has nothing in it, which is worse than declining outright.
+            log.warn("writer produced zero citations — no_evidence, not an empty answered")
+            return _no_evidence()
+        prose_text = f"{opening.strip()} {_render_prose(verified_citations)}" if opening.strip() else _render_prose(verified_citations)
         cited_paper_ids = {q.paper_id for c in verified_citations for q in c.supporting_quotes}
         site_counts = [
             row["site_count"] for row in paper_ranks
             if row["paper_id"] in cited_paper_ids and row["site_count"] is not None
         ]
+        grade_result = evidence_grade.compute(cited_paper_ids, paper_ranks)
         evidence = {
             "independent_papers_cited": len(cited_paper_ids),
             "max_site_count": max(site_counts) if site_counts else None,
+            "evidence_grade": grade_result["grade"],
+            "evidence_grade_factors": grade_result["factors"],
         }
-        print(f"[evidence] {evidence}")
+        log.success(f"evidence: {evidence}")
         return TurnResult(
             terminal_state="answered",
             reflection=reflection,
@@ -165,11 +236,13 @@ def handle_turn(raw_input: str) -> TurnResult:
         semantic_flags = citation_checker.check_semantic(verified) if verified else []
 
         all_flags = mechanical_flags + semantic_flags
-        print(f"[citation_checker] attempt {attempt + 1}: {len(all_flags)} flags")
+        log.stage(
+            "citation_checker",
+            f"attempt {attempt + 1}: {len(all_flags)} flags",
+            style="yellow" if all_flags else "green",
+        )
         for f in all_flags:
-            print(f"    FLAGGED: {f.reason}")
-            print(f"      sentence: {f.sentence[:200]!r}")
-            print(f"      quote:    {f.quote[:200]!r}")
+            log.flag(f.reason, f.sentence, f.quote)
         if not all_flags:
             return _build_answered(citations)
 
@@ -179,6 +252,7 @@ def handle_turn(raw_input: str) -> TurnResult:
             # 3 flags becoming 5 on the previous, unguided retry).
             flag_pairs = [(f.sentence, f.quote, f.reason) for f in all_flags]
             draft = writer.write(research_query, writer_input, previous_flags=flag_pairs)
+            opening = draft.output.opening
             prose = draft.output.prose
             citations = draft.output.citations
         else:
@@ -192,8 +266,8 @@ def handle_turn(raw_input: str) -> TurnResult:
             flagged_final_numbers = {f.citation_number for f in all_flags}
             salvaged_citations = [c for c in citations if c.citation_number not in flagged_final_numbers]
             if not salvaged_citations:
-                return TurnResult(terminal_state="no_evidence", reflection=reflection)
-            print(f"[salvage] dropped {len(flagged_final_numbers)} flagged citation(s), kept {len(salvaged_citations)}")
+                return _no_evidence()
+            log.warn(f"salvage: dropped {len(flagged_final_numbers)} flagged citation(s), kept {len(salvaged_citations)}")
             return _build_answered(salvaged_citations)
 
-    return TurnResult(terminal_state="no_evidence", reflection=reflection)
+    return _no_evidence()

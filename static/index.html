@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NeuroEvidence</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  .msg-enter { animation: fadeIn .25s ease-out; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800 h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="border-b border-slate-200 bg-white px-6 py-4 flex items-center justify-between shrink-0">
+    <div>
+      <h1 class="text-lg font-semibold text-slate-900">NeuroEvidence</h1>
+      <p class="text-xs text-slate-500">Research-literature Q&A for autism, ADHD, dyslexia, dyspraxia, and Tourette's — never a diagnosis.</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="session-indicator" class="text-xs text-slate-400">connecting…</span>
+      <button id="new-session-btn" class="text-xs font-medium px-3 py-1.5 rounded-md border border-slate-300 hover:bg-slate-100 transition">
+        New conversation
+      </button>
+    </div>
+  </header>
+
+  <!-- Chat log -->
+  <main id="chat-log" class="flex-1 overflow-y-auto px-6 py-6 space-y-4 max-w-3xl w-full mx-auto"></main>
+
+  <!-- Composer -->
+  <footer class="border-t border-slate-200 bg-white px-6 py-4 shrink-0">
+    <form id="composer" class="max-w-3xl mx-auto flex gap-3">
+      <input
+        id="raw-input"
+        type="text"
+        autocomplete="off"
+        placeholder="Ask a research question, e.g. what does research say about early signs of autism in infants?"
+        class="flex-1 rounded-lg border border-slate-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+      <button
+        id="send-btn"
+        type="submit"
+        class="rounded-lg bg-blue-600 text-white text-sm font-medium px-5 py-2.5 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
+      >Ask</button>
+    </form>
+  </footer>
+
+  <!-- Paper detail modal -->
+  <div id="paper-modal" class="hidden fixed inset-0 bg-black/40 flex items-center justify-center p-6 z-50">
+    <div class="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[80vh] overflow-y-auto p-6 relative">
+      <button id="paper-modal-close" class="absolute top-4 right-4 text-slate-400 hover:text-slate-700">✕</button>
+      <div id="paper-modal-body" class="text-sm"></div>
+    </div>
+  </div>
+
+<script>
+const API_BASE = window.location.origin;
+let sessionId = null;
+
+const chatLog = document.getElementById("chat-log");
+const composer = document.getElementById("composer");
+const rawInput = document.getElementById("raw-input");
+const sendBtn = document.getElementById("send-btn");
+const sessionIndicator = document.getElementById("session-indicator");
+const paperModal = document.getElementById("paper-modal");
+const paperModalBody = document.getElementById("paper-modal-body");
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str ?? "";
+  return div.innerHTML;
+}
+
+function el(html) {
+  const t = document.createElement("template");
+  t.innerHTML = html.trim();
+  return t.content.firstElementChild;
+}
+
+async function createSession() {
+  sessionIndicator.textContent = "connecting…";
+  try {
+    const res = await fetch(`${API_BASE}/sessions`, { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    sessionId = data.session_id;
+    sessionIndicator.textContent = `session ${sessionId.slice(0, 8)}…`;
+  } catch (err) {
+    sessionIndicator.textContent = "connection failed";
+    appendSystemError(`Couldn't reach the API at ${API_BASE}. Is the server running? (${err.message})`);
+  }
+}
+
+function appendUserMessage(text) {
+  chatLog.appendChild(el(`
+    <div class="msg-enter flex justify-end">
+      <div class="bg-blue-600 text-white rounded-2xl rounded-br-sm px-4 py-2.5 max-w-[80%] text-sm">
+        ${escapeHtml(text)}
+      </div>
+    </div>
+  `));
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function appendSystemError(text) {
+  chatLog.appendChild(el(`
+    <div class="msg-enter flex justify-start">
+      <div class="bg-red-50 border border-red-200 text-red-700 rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[80%] text-sm">
+        ${escapeHtml(text)}
+      </div>
+    </div>
+  `));
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function appendLoading() {
+  const id = "loading-" + Date.now();
+  const node = el(`
+    <div class="msg-enter flex justify-start" id="${id}">
+      <div class="bg-white border border-slate-200 rounded-2xl rounded-bl-sm px-4 py-3 max-w-[85%] text-sm w-full">
+        <div class="flex items-center gap-2 text-slate-500">
+          <svg class="animate-spin h-4 w-4 text-slate-400 shrink-0" viewBox="0 0 24 24" fill="none">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+          </svg>
+          <span>researching… <span class="elapsed">0s</span></span>
+        </div>
+        <div class="progress-lines space-y-1 mt-2"></div>
+      </div>
+    </div>
+  `);
+  chatLog.appendChild(node);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  const started = Date.now();
+  const interval = setInterval(() => {
+    const span = node.querySelector(".elapsed");
+    if (span) span.textContent = `${Math.round((Date.now() - started) / 1000)}s`;
+  }, 1000);
+  return { node, stop: () => clearInterval(interval) };
+}
+
+const STAGE_STYLE = {
+  stage:   { icon: "▸", color: "text-slate-500" },
+  sub:     { icon: "·", color: "text-slate-400" },
+  success: { icon: "✓", color: "text-green-600" },
+  warn:    { icon: "⚠", color: "text-amber-600" },
+  flag:    { icon: "✗", color: "text-red-500" },
+};
+
+function addProgressLine(loading, text, kind = "stage") {
+  const container = loading.node.querySelector(".progress-lines");
+  if (!container) return;
+  const style = STAGE_STYLE[kind] || STAGE_STYLE.stage;
+  container.appendChild(el(`<div class="msg-enter text-xs ${style.color}">${style.icon} ${escapeHtml(text)}</div>`));
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function describeProgressEvent(event) {
+  switch (event.type) {
+    case "stage":   return { text: event.detail ? `${event.name} — ${event.detail}` : event.name, kind: "stage" };
+    case "sub":     return { text: event.text, kind: "sub" };
+    case "success": return { text: event.text, kind: "success" };
+    case "warn":    return { text: event.text, kind: "warn" };
+    case "flag":    return { text: `citation check flagged something, fixing it — ${event.reason}`, kind: "flag" };
+    default:        return null;
+  }
+}
+
+const GRADE_STYLE = {
+  "High":     "bg-green-100 text-green-800 border-green-300",
+  "Moderate": "bg-lime-100 text-lime-800 border-lime-300",
+  "Low":      "bg-amber-100 text-amber-800 border-amber-300",
+  "Very Low": "bg-red-100 text-red-800 border-red-300",
+};
+
+const STATE_STYLE = {
+  refused:           { bg: "bg-red-50 border-red-200 text-red-700", icon: "🚫" },
+  out_of_scope:      { bg: "bg-slate-100 border-slate-200 text-slate-600", icon: "↪" },
+  no_evidence:       { bg: "bg-amber-50 border-amber-200 text-amber-800", icon: "⚠" },
+  split:             { bg: "bg-amber-50 border-amber-200 text-amber-800", icon: "✂" },
+  distress:          { bg: "bg-purple-50 border-purple-200 text-purple-800", icon: "💜" },
+  practical_support: { bg: "bg-cyan-50 border-cyan-200 text-cyan-800", icon: "🧭" },
+  greeting:          { bg: "bg-blue-50 border-blue-200 text-blue-800", icon: "👋" },
+};
+
+function renderResources(resources) {
+  if (!resources || !resources.length) return "";
+  return `
+    <div class="mt-2 space-y-2">
+      ${resources.map(r => `
+        <a href="${r.url}" target="_blank" rel="noopener noreferrer"
+           class="block bg-white border border-cyan-200 rounded-lg px-3 py-2 hover:bg-cyan-50 transition">
+          <p class="font-medium text-cyan-800 text-xs">${escapeHtml(r.name)}</p>
+          <p class="text-slate-500 text-xs mt-0.5">${escapeHtml(r.description)}</p>
+        </a>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderCommunityCorroboration(corroboration) {
+  if (!corroboration) return "";
+  return `
+    <div class="mt-3 bg-white border border-teal-200 rounded-lg p-3">
+      <p class="text-xs font-semibold text-teal-800 mb-1">📣 Well documented by the community, even where formal research is thin</p>
+      <p class="text-xs text-slate-600 mb-2">${escapeHtml(corroboration.summary)}</p>
+      <div class="flex flex-wrap gap-2">
+        ${corroboration.sources.map(s => `
+          <a href="${s.url}" target="_blank" rel="noopener noreferrer" class="text-xs text-teal-700 hover:underline font-medium">${escapeHtml(s.name)} ↗</a>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderProse(prose, citations) {
+  return escapeHtml(prose).replace(/\[(\d+)\]/g, (match, n) => {
+    const has = citations.some(c => String(c.citation_number) === n);
+    if (!has) return match;
+    return `<button class="citation-marker inline-flex items-center justify-center h-5 min-w-5 px-1 rounded-full bg-blue-100 text-blue-700 text-[11px] font-semibold align-super hover:bg-blue-200 transition" data-n="${n}">${n}</button>`;
+  });
+}
+
+function renderCitations(citations) {
+  return citations.map(c => `
+    <div class="citation-card border border-slate-200 rounded-lg p-3 bg-slate-50" data-citation="${c.citation_number}">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="inline-flex items-center justify-center h-5 min-w-5 px-1 rounded-full bg-blue-100 text-blue-700 text-[11px] font-semibold">${c.citation_number}</span>
+        <span class="text-xs text-slate-400">${c.supporting_quotes.length} supporting quote${c.supporting_quotes.length > 1 ? "s" : ""}</span>
+      </div>
+      <div class="space-y-2">
+        ${c.supporting_quotes.map(q => `
+          <div class="text-xs">
+            <button class="paper-link text-blue-600 hover:underline font-medium" data-paper-id="${q.paper_id}">
+              paper ${q.paper_id.slice(0, 8)}…
+            </button>
+            <p class="text-slate-600 italic mt-1">"${escapeHtml(q.quote)}"</p>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderEvidence(evidence) {
+  if (!evidence) return "";
+  const grade = evidence.evidence_grade;
+  const gradeClass = GRADE_STYLE[grade] || "bg-slate-100 text-slate-700 border-slate-300";
+  const factors = evidence.evidence_grade_factors || {};
+  return `
+    <div class="flex items-center gap-2 flex-wrap text-xs">
+      ${grade ? `<span class="px-2 py-1 rounded-full border font-semibold ${gradeClass}">Evidence: ${grade}</span>` : ""}
+      <span class="text-slate-500">${evidence.independent_papers_cited} independent paper${evidence.independent_papers_cited === 1 ? "" : "s"} cited</span>
+      ${evidence.max_site_count ? `<span class="text-slate-500">· largest multi-site study: ${evidence.max_site_count} sites</span>` : ""}
+    </div>
+    ${grade ? `
+      <details class="text-xs text-slate-500">
+        <summary class="cursor-pointer hover:text-slate-700">why this grade?</summary>
+        <ul class="mt-1 ml-4 list-disc space-y-0.5">
+          <li>strongest study design cited: ${factors.strongest_design_type || "not yet classified"}</li>
+          <li>max multi-site count: ${factors.max_site_count ?? "unknown"}</li>
+          <li>avg. quality-check fields absent/unchecked: ${factors.avg_fields_absent_ratio ?? "unknown"}</li>
+        </ul>
+        <p class="mt-1 text-slate-400">A simplified, GRADE-inspired heuristic computed from real counted facts — not a probability, and not a model's guess.</p>
+      </details>
+    ` : ""}
+  `;
+}
+
+function appendAnsweredMessage(data) {
+  const node = el(`
+    <div class="msg-enter flex justify-start">
+      <div class="bg-white border border-slate-200 rounded-2xl rounded-bl-sm px-4 py-3 max-w-[85%] text-sm space-y-3">
+        ${data.reflection ? `<p class="text-xs text-slate-400 italic">${escapeHtml(data.reflection)}</p>` : ""}
+        <p class="leading-relaxed prose-text"></p>
+        <div class="border-t border-slate-100 pt-3">${renderEvidence(data.evidence)}</div>
+        <details class="citations-details">
+          <summary class="text-xs font-medium text-slate-500 cursor-pointer hover:text-slate-700">
+            show ${data.citations.length} citation${data.citations.length === 1 ? "" : "s"}
+          </summary>
+          <div class="mt-2 space-y-2 citations-list"></div>
+        </details>
+      </div>
+    </div>
+  `);
+  node.querySelector(".prose-text").innerHTML = renderProse(data.prose, data.citations);
+  node.querySelector(".citations-list").innerHTML = renderCitations(data.citations);
+  chatLog.appendChild(node);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function appendStateMessage(state, data) {
+  const style = STATE_STYLE[state] || { bg: "bg-slate-100 border-slate-200 text-slate-600", icon: "•" };
+  chatLog.appendChild(el(`
+    <div class="msg-enter flex justify-start">
+      <div class="border rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[85%] text-sm ${style.bg}">
+        <div class="flex items-start gap-2">
+          <span>${style.icon}</span>
+          <div class="flex-1">
+            ${data.reflection ? `<p class="text-xs opacity-70 italic mb-1">${escapeHtml(data.reflection)}</p>` : ""}
+            <p>${escapeHtml(data.message || "")}</p>
+            ${renderResources(data.resources)}
+            ${renderCommunityCorroboration(data.community_corroboration)}
+          </div>
+        </div>
+      </div>
+    </div>
+  `));
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+async function openPaperModal(paperId) {
+  paperModalBody.innerHTML = `<p class="text-slate-400 text-sm">loading…</p>`;
+  paperModal.classList.remove("hidden");
+  try {
+    const res = await fetch(`${API_BASE}/papers/${paperId}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const p = await res.json();
+    paperModalBody.innerHTML = `
+      <h3 class="font-semibold text-slate-900 mb-2">${escapeHtml(p.title)}</h3>
+      <dl class="grid grid-cols-3 gap-x-3 gap-y-1 text-xs text-slate-600 mb-4">
+        <dt class="font-medium">Year</dt><dd class="col-span-2">${p.publication_year ?? "—"}</dd>
+        <dt class="font-medium">Journal</dt><dd class="col-span-2">${escapeHtml(p.journal || "—")}</dd>
+        <dt class="font-medium">Design</dt><dd class="col-span-2">${p.design_type || "not yet classified"}</dd>
+        <dt class="font-medium">License</dt><dd class="col-span-2">${p.license}</dd>
+        <dt class="font-medium">DOI</dt><dd class="col-span-2">${p.doi || "—"}</dd>
+      </dl>
+      <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Quality checks</h4>
+      <div class="space-y-1.5">
+        ${p.quality_checks.length ? p.quality_checks.map(c => `
+          <div class="flex items-start gap-2 text-xs">
+            <span class="px-1.5 py-0.5 rounded font-medium ${
+              c.status === "reported" ? "bg-green-100 text-green-700" :
+              c.status === "absent" ? "bg-red-100 text-red-700" :
+              c.status === "unchecked" ? "bg-slate-100 text-slate-500" :
+              "bg-slate-100 text-slate-500"
+            }">${c.status}</span>
+            <div>
+              <p class="font-medium text-slate-700">${c.field_id}</p>
+              ${c.evidence_snippet ? `<p class="text-slate-500 italic">"${escapeHtml(c.evidence_snippet)}"</p>` : ""}
+            </div>
+          </div>
+        `).join("") : `<p class="text-slate-400 text-xs">no quality checks recorded yet</p>`}
+      </div>
+    `;
+  } catch (err) {
+    paperModalBody.innerHTML = `<p class="text-red-600 text-sm">Couldn't load paper: ${err.message}</p>`;
+  }
+}
+
+document.getElementById("paper-modal-close").addEventListener("click", () => paperModal.classList.add("hidden"));
+paperModal.addEventListener("click", (e) => { if (e.target === paperModal) paperModal.classList.add("hidden"); });
+
+chatLog.addEventListener("click", (e) => {
+  const paperBtn = e.target.closest(".paper-link");
+  if (paperBtn) { openPaperModal(paperBtn.dataset.paperId); return; }
+  const marker = e.target.closest(".citation-marker");
+  if (marker) {
+    const card = document.querySelector(`.citation-card[data-citation="${marker.dataset.n}"]`);
+    if (card) {
+      const details = card.closest(".citations-details");
+      if (details) details.open = true;
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.classList.add("ring-2", "ring-blue-400");
+      setTimeout(() => card.classList.remove("ring-2", "ring-blue-400"), 1200);
+    }
+  }
+});
+
+composer.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = rawInput.value.trim();
+  if (!text || !sessionId) return;
+
+  appendUserMessage(text);
+  rawInput.value = "";
+  sendBtn.disabled = true;
+  rawInput.disabled = true;
+
+  const loading = appendLoading();
+  try {
+    const res = await fetch(`${API_BASE}/sessions/${sessionId}/turns/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raw_input: text }),
+    });
+
+    if (!res.ok || !res.body) {
+      loading.stop();
+      loading.node.remove();
+      appendSystemError(`Request failed (HTTP ${res.status}).`);
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalData = null;
+    let errorMessage = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop(); // last chunk may be incomplete — keep it for next read
+
+      for (const raw of events) {
+        if (!raw.startsWith("data: ")) continue;
+        const event = JSON.parse(raw.slice(6));
+        if (event.type === "result") {
+          finalData = event.data;
+        } else if (event.type === "error") {
+          errorMessage = event.message;
+        } else {
+          const described = describeProgressEvent(event);
+          if (described) addProgressLine(loading, described.text, described.kind);
+        }
+      }
+    }
+
+    loading.stop();
+    loading.node.remove();
+
+    if (errorMessage) {
+      appendSystemError(`Something went wrong: ${errorMessage}`);
+    } else if (finalData) {
+      if (finalData.terminal_state === "answered") {
+        appendAnsweredMessage(finalData);
+      } else {
+        appendStateMessage(finalData.terminal_state, finalData);
+      }
+    } else {
+      appendSystemError("The response stream ended without a result.");
+    }
+  } catch (err) {
+    loading.stop();
+    loading.node.remove();
+    appendSystemError(`Something went wrong: ${err.message}`);
+  } finally {
+    sendBtn.disabled = false;
+    rawInput.disabled = false;
+    rawInput.focus();
+  }
+});
+
+document.getElementById("new-session-btn").addEventListener("click", async () => {
+  chatLog.innerHTML = "";
+  await createSession();
+});
+
+createSession();
+</script>
+</body>
+</html>

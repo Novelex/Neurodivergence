@@ -61,16 +61,26 @@ exception when duplicate_object then null;
 end $$;
 
 do $$ begin
-  -- §8 — six values. 'answered' is the ordinary case; the other five are the system
-  -- deliberately stopping short, and are as much a product decision as the answer is.
+  -- §8 — eight values (originally six; practical_support and greeting added later).
+  -- 'answered' is the ordinary case; the rest are the system deliberately stopping
+  -- short (or, for greeting, not needing to search at all), and are as much a product
+  -- decision as the answer is.
   create type terminal_state as enum (
     'answered',
     'refused',
     'out_of_scope',
     'no_evidence',
     'split',
-    'distress'
+    'distress',
+    'practical_support',
+    'greeting'
   );
+exception when duplicate_object then null;
+end $$;
+
+do $$ begin
+  alter type terminal_state add value if not exists 'practical_support';
+  alter type terminal_state add value if not exists 'greeting';
 exception when duplicate_object then null;
 end $$;
 
@@ -354,6 +364,16 @@ create table if not exists sessions (
   user_id     uuid references auth.users(id) on delete cascade,
   created_at  timestamptz not null default now()
 );
+
+-- Short-term session memory. A rolling window of the last few turns' already-scrubbed
+-- research_query/reflection stays exact in the turns table itself (no new storage needed
+-- for that part); context_summary holds a concise, cost-bounded distillation of
+-- everything OLDER than that window, updated one turn at a time as a turn ages out —
+-- never a running re-summary of the whole session, to keep the update itself cheap.
+-- Never raw_input — §7.2's privacy boundary holds here exactly as everywhere else, since
+-- research_query/reflection are already stripped of personal/narrative detail by the
+-- translator before they're ever stored.
+alter table sessions add column if not exists context_summary text not null default '';
 
 create table if not exists turns (
   id                 uuid primary key default gen_random_uuid(),

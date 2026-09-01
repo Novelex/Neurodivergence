@@ -11,13 +11,22 @@ opt-in anyway); it stops being fine the moment real per-user auth matters, which
 separate, explicitly-flagged next step, not silently pretended away here.
 """
 
-from fastapi import APIRouter, HTTPException
+import json
+import queue
+import threading
 
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+
+from neurodiversity import console_log
+from neurodiversity.agents import summarizer
 from neurodiversity.api.schemas import (
     AnsweredTurn,
     DistressTurn,
+    GreetingTurn,
     NoEvidenceTurn,
     OutOfScopeTurn,
+    PracticalSupportTurn,
     RefusedTurn,
     SessionCreated,
     SessionDetail,
@@ -38,7 +47,40 @@ _TERMINAL_STATE_MODELS = {
     "no_evidence": NoEvidenceTurn,
     "split": SplitTurn,
     "distress": DistressTurn,
+    "practical_support": PracticalSupportTurn,
+    "greeting": GreetingTurn,
 }
+
+# Short-term session memory (agents/summarizer.py). Exact window size — the last N
+# research-bearing turns stay verbatim; anything older gets folded into
+# sessions.context_summary one turn at a time as it ages out, keeping the fold itself
+# cheap and infrequent rather than a per-turn cost.
+MEMORY_WINDOW = 3
+
+
+def _get_session_context(db, session_id: str, current_summary: str) -> tuple[str, list[tuple[str, str]]]:
+    """Fetches this session's prior research-bearing turns, folds the oldest into the
+    summary if the window would otherwise be exceeded, and returns (summary, recent)
+    ready to pass into handle_turn. Only turns with a research_query count — a greeting
+    or refusal never called the translator, so there's nothing to remember from it."""
+    prior_turns = (
+        db.table("turns")
+        .select("research_query, reflection")
+        .eq("session_id", session_id)
+        .not_.is_("research_query", "null")
+        .order("created_at")
+        .execute()
+        .data
+    )
+    summary = current_summary
+    if len(prior_turns) >= MEMORY_WINDOW:
+        aging_out = prior_turns[0]
+        folded = summarizer.fold(summary, aging_out["research_query"], aging_out["reflection"])
+        summary = folded.output.summary
+        db.table("sessions").update({"context_summary": summary}).eq("id", session_id).execute()
+        prior_turns = prior_turns[1:]
+    recent = [(t["research_query"], t["reflection"]) for t in prior_turns]
+    return summary, recent
 
 
 @router.post("/sessions", response_model=SessionCreated)
@@ -110,13 +152,9 @@ def get_turn(session_id: str, turn_id: str) -> TurnRecord:
     )
 
 
-@router.post("/sessions/{session_id}/turns", response_model=TurnResponse)
-def create_turn(session_id: str, body: TurnRequest) -> TurnResponse:
-    db = get_service_client()
-    if not db.table("sessions").select("id").eq("id", session_id).execute().data:
-        raise HTTPException(status_code=404, detail="session not found")
-
-    result = handle_turn(body.raw_input)
+def _persist_and_build_response(db, session_id: str, result):
+    """Shared by both /turns and /turns/stream — persistence and response-shaping must
+    stay identical between them, only how the caller learns about progress differs."""
     model = _TERMINAL_STATE_MODELS[result.terminal_state]
 
     citations_json = [
@@ -151,6 +189,63 @@ def create_turn(session_id: str, body: TurnRequest) -> TurnResponse:
             citations=citations_json,
             evidence=result.evidence,
         )
-    if result.terminal_state in ("no_evidence", "split"):
+    if result.terminal_state == "no_evidence":
+        return model(reflection=result.reflection, community_corroboration=result.community_corroboration)
+    if result.terminal_state == "split":
         return model(reflection=result.reflection)
+    if result.terminal_state == "practical_support":
+        return model(resources=result.resources)
+    if result.terminal_state == "greeting":
+        return model(message=result.prose)
     return model()
+
+
+@router.post("/sessions/{session_id}/turns", response_model=TurnResponse)
+def create_turn(session_id: str, body: TurnRequest) -> TurnResponse:
+    db = get_service_client()
+    session_rows = db.table("sessions").select("id, context_summary").eq("id", session_id).execute().data
+    if not session_rows:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    context_summary, recent_turns = _get_session_context(db, session_id, session_rows[0]["context_summary"] or "")
+    result = handle_turn(body.raw_input, context_summary, recent_turns)
+    return _persist_and_build_response(db, session_id, result)
+
+
+@router.post("/sessions/{session_id}/turns/stream")
+def create_turn_stream(session_id: str, body: TurnRequest) -> StreamingResponse:
+    """Same work as /turns, but streams each pipeline stage as a Server-Sent Event while
+    the turn runs, instead of making the caller wait on one request for the full ~30-90s
+    with no feedback. The final event always carries the exact same response shape
+    /turns would have returned — this is a progress view onto the same result, not a
+    different one."""
+    db = get_service_client()
+    session_rows = db.table("sessions").select("id, context_summary").eq("id", session_id).execute().data
+    if not session_rows:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    context_summary, recent_turns = _get_session_context(db, session_id, session_rows[0]["context_summary"] or "")
+
+    event_queue: queue.Queue = queue.Queue()
+
+    def run_pipeline():
+        try:
+            with console_log.use_sink(event_queue.put):
+                result = handle_turn(body.raw_input, context_summary, recent_turns)
+            response = _persist_and_build_response(db, session_id, result)
+            event_queue.put({"type": "result", "data": response.model_dump(mode="json")})
+        except Exception as exc:
+            event_queue.put({"type": "error", "message": str(exc)})
+        finally:
+            event_queue.put(None)  # sentinel: stream is done
+
+    threading.Thread(target=run_pipeline, daemon=True).start()
+
+    def event_stream():
+        while True:
+            event = event_queue.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

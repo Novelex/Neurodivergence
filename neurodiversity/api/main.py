@@ -6,7 +6,10 @@ that validate the requests and responses — not a separately maintained spec.
 Run with: uv run uvicorn neurodiversity.api.main:app --reload
 """
 
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from neurodiversity.api.routes import papers, sessions
 from neurodiversity.api.schemas import HealthResponse
@@ -38,3 +41,8 @@ def health() -> HealthResponse:
         db_reachable = False
 
     return HealthResponse(api_keys_configured=keys_configured, database_reachable=db_reachable)
+
+
+# Mounted last so it never shadows an API route above — anything not matched by /health,
+# /sessions/*, or /papers/* falls through to the static frontend (static/index.html).
+app.mount("/", StaticFiles(directory=Path(__file__).resolve().parents[2] / "static", html=True), name="static")

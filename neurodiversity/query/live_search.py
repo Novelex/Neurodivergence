@@ -20,6 +20,7 @@ Already-known papers are never reprocessed (ingest_cheap's own pubmed_id check h
 that), so a repeated or related question mostly hits cache and costs little.
 """
 
+from neurodiversity import console_log as log
 from neurodiversity.db.client import get_service_client
 from neurodiversity.ingestion.process_paper import IngestResult, classify_and_audit, ingest_cheap
 from neurodiversity.ingestion.sources import pubmed
@@ -31,7 +32,7 @@ def ingest_cheap_for_query(research_query: str, max_results: int = MAX_LIVE_RESU
     """Phase A only — no GPT-4o call. Returns paper_id -> IngestResult for later Phase B use."""
     db = get_service_client()
     pmids = pubmed.esearch_free_text(research_query, retmax=max_results)
-    print(f"[live_search] {len(pmids)} PMIDs for {research_query!r}: {pmids}")
+    log.sub(f"{len(pmids)} PMIDs for {research_query!r}: {pmids}", style="magenta")
     if not pmids:
         return {}
 
@@ -42,7 +43,7 @@ def ingest_cheap_for_query(research_query: str, max_results: int = MAX_LIVE_RESU
             ingest_result = ingest_cheap(db, paper)
             results[ingest_result.paper_id] = ingest_result
         except Exception as exc:
-            print(f"[live_search] failed to ingest {paper.pubmed_id}: {exc}")
+            log.warn(f"failed to ingest {paper.pubmed_id}: {exc}")
     return results
 
 
