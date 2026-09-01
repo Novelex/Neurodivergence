@@ -51,4 +51,17 @@ def health() -> HealthResponse:
 
 # Mounted last so it never shadows an API route above — anything not matched by /api/*
 # falls through to the static frontend (static/index.html).
-app.mount("/", StaticFiles(directory=Path(__file__).resolve().parents[2] / "static", html=True), name="static")
+#
+# Deliberately defensive: StaticFiles(directory=...) raises RuntimeError at import time
+# if the directory doesn't exist, which would crash the entire app object's construction
+# — every route, including /api/health, would then fail identically, which is exactly
+# what real Vercel deployment testing showed (both / and /api/health returned the same
+# byte-identical FastAPI 404, the signature of the app never finishing import rather than
+# a routing mismatch). If Vercel's `includeFiles` bundling doesn't preserve this exact
+# path, the API still comes up; only the static frontend is missing, which is at least
+# diagnosable instead of masquerading as "every route not found."
+_static_dir = Path(__file__).resolve().parents[2] / "static"
+if _static_dir.is_dir():
+    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="static")
+else:
+    print(f"[main] WARNING: static directory not found at {_static_dir} — frontend will not be served, but /api/* routes are unaffected")
