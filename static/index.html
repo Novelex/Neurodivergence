@@ -184,8 +184,9 @@ const STATE_STYLE = {
   no_evidence:       { bg: "bg-amber-50 border-amber-200 text-amber-800", icon: "⚠" },
   split:             { bg: "bg-amber-50 border-amber-200 text-amber-800", icon: "✂" },
   distress:          { bg: "bg-purple-50 border-purple-200 text-purple-800", icon: "💜" },
-  practical_support: { bg: "bg-cyan-50 border-cyan-200 text-cyan-800", icon: "🧭" },
-  greeting:          { bg: "bg-blue-50 border-blue-200 text-blue-800", icon: "👋" },
+  practical_support:    { bg: "bg-cyan-50 border-cyan-200 text-cyan-800", icon: "🧭" },
+  greeting:             { bg: "bg-blue-50 border-blue-200 text-blue-800", icon: "👋" },
+  needs_clarification:  { bg: "bg-cyan-50 border-cyan-200 text-cyan-800", icon: "❓" },
 };
 
 function renderResources(resources) {
@@ -296,21 +297,30 @@ function appendAnsweredMessage(data) {
 
 function appendStateMessage(state, data) {
   const style = STATE_STYLE[state] || { bg: "bg-slate-100 border-slate-200 text-slate-600", icon: "•" };
-  chatLog.appendChild(el(`
+  const bodyText = data.message || data.clarifying_question || "";
+  const node = el(`
     <div class="msg-enter flex justify-start">
       <div class="border rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[85%] text-sm ${style.bg}">
         <div class="flex items-start gap-2">
           <span>${style.icon}</span>
           <div class="flex-1">
             ${data.reflection ? `<p class="text-xs opacity-70 italic mb-1">${escapeHtml(data.reflection)}</p>` : ""}
-            <p>${escapeHtml(data.message || "")}</p>
+            <p>${escapeHtml(bodyText)}</p>
             ${renderResources(data.resources)}
             ${renderCommunityCorroboration(data.community_corroboration)}
+            ${data.options && data.options.length ? `
+              <div class="mt-2 flex flex-wrap gap-2 clarification-options">
+                ${data.options.map(o => `
+                  <button type="button" class="option-btn text-xs px-3 py-1.5 rounded-full border border-cyan-300 bg-white text-cyan-800 hover:bg-cyan-100 disabled:opacity-40 disabled:cursor-not-allowed transition">${escapeHtml(o)}</button>
+                `).join("")}
+              </div>
+            ` : ""}
           </div>
         </div>
       </div>
     </div>
-  `));
+  `);
+  chatLog.appendChild(node);
   chatLog.scrollTop = chatLog.scrollHeight;
 }
 
@@ -357,6 +367,13 @@ document.getElementById("paper-modal-close").addEventListener("click", () => pap
 paperModal.addEventListener("click", (e) => { if (e.target === paperModal) paperModal.classList.add("hidden"); });
 
 chatLog.addEventListener("click", (e) => {
+  const optionBtn = e.target.closest(".option-btn");
+  if (optionBtn) {
+    const group = optionBtn.closest(".clarification-options");
+    if (group) group.querySelectorAll(".option-btn").forEach(b => b.disabled = true); // one pick per prompt
+    submitMessage(optionBtn.textContent);
+    return;
+  }
   const paperBtn = e.target.closest(".paper-link");
   if (paperBtn) { openPaperModal(paperBtn.dataset.paperId); return; }
   const marker = e.target.closest(".citation-marker");
@@ -436,13 +453,10 @@ async function runTurnPlain(text) {
   return { finalData: await res.json(), errorMessage: null };
 }
 
-composer.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const text = rawInput.value.trim();
+async function submitMessage(text) {
   if (!text || !sessionId) return;
 
   appendUserMessage(text);
-  rawInput.value = "";
   sendBtn.disabled = true;
   rawInput.disabled = true;
 
@@ -476,6 +490,14 @@ composer.addEventListener("submit", async (e) => {
     rawInput.disabled = false;
     rawInput.focus();
   }
+}
+
+composer.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = rawInput.value.trim();
+  if (!text) return;
+  rawInput.value = "";
+  await submitMessage(text);
 });
 
 document.getElementById("new-session-btn").addEventListener("click", async () => {

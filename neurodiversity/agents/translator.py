@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from neurodiversity.agents.base import AgentResult, run_agent
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 SYSTEM_PROMPT = """Convert this personal message into a researchable query, and write one reflection
 sentence to show the person what you understood.
@@ -30,6 +30,21 @@ and the new message is just "what about children instead", the research_query sh
 become "post-social fatigue and recovery in autistic children", not just "children". If
 the new message is already a complete, standalone question, ignore the context and
 translate it as normal — do not let prior topics bleed into an unrelated new question.
+
+First decide: is this message genuinely too ambiguous to form ANY reasonable
+research_query, even using the conversation context above? This means it lacks a
+referent entirely (e.g. "does it work" with no prior context establishing what "it" is),
+not just that it could theoretically be read two ways. If the topic is reasonably
+inferable — from the message itself or the conversation context — translate it normally;
+do not ask for clarification just because a question is broad or informally phrased.
+
+If it IS genuinely ambiguous: set needs_clarification to true, write a short, direct
+clarifying_question, and give 2-4 concrete clarification_options representing the
+plausible distinct interpretations (e.g. for "does it work", options might be about
+different treatments or conditions the conversation could plausibly mean). Leave
+research_query and reflection empty in this case — do not guess and translate anyway.
+
+If it's NOT ambiguous, leave needs_clarification false and fill in:
 
 research_query: a short, literature-search-style phrase capturing the topic and
 population (e.g., "post-social fatigue and recovery in autistic adults"). Strip all
@@ -55,8 +70,11 @@ the prior conversation context provided."""
 
 
 class TranslationResult(BaseModel):
-    research_query: str
-    reflection: str
+    needs_clarification: bool = False
+    clarifying_question: str | None = None
+    clarification_options: list[str] = []
+    research_query: str = ""
+    reflection: str = ""
 
 
 def translate(raw_input: str, context_summary: str = "", recent_turns: list[tuple[str, str]] | None = None) -> AgentResult:

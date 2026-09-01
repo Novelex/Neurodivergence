@@ -138,6 +138,12 @@ class RefusedTurn(BaseModel):
 
 
 class OutOfScopeTurn(BaseModel):
+    """§8's original design had this carry only a static boundary message. Now carries a
+    real, model-generated conversational reply instead (agents/general_chat.py) — an
+    off-topic message gets a normal, helpful chatbot response, the way any other chatbot
+    handles small talk, rather than a flat "that's not what I cover." The default below
+    is only a fallback for the rare case nothing else populated it."""
+
     terminal_state: Literal["out_of_scope"] = "out_of_scope"
     message: str = (
         "This system answers questions about neurodevelopmental research "
@@ -204,20 +210,34 @@ class PracticalSupportTurn(BaseModel):
 
 
 class GreetingTurn(BaseModel):
-    """A bare greeting with no question attached (pipeline.py's _is_pure_greeting, plain
-    code, no model call to detect). `message` itself IS model-generated (agents/greeter.py)
-    — unlike every other terminal state's static default text, a canned string here would
-    read as robotic for something this conversational; there's no factual claim at stake
-    for a hello, so this is the one place letting the model phrase freely is safe."""
+    """A bare greeting with no question attached (scope_guard's own classification —
+    folded in there rather than a plain-code keyword match, since a keyword list missed
+    typo'd greetings like "hy" in real testing). `message` itself IS model-generated
+    (agents/greeter.py) — unlike every other terminal state's static default text, a
+    canned string here would read as robotic for something this conversational; there's
+    no factual claim at stake for a hello, so this is the one place letting the model
+    phrase freely is safe."""
 
     terminal_state: Literal["greeting"] = "greeting"
     message: str
 
 
+class NeedsClarificationTurn(BaseModel):
+    """The translator (agents/translator.py) judged the message genuinely too ambiguous
+    to form any reasonable research_query, even with conversation context — not merely
+    broad or informally phrased. Offers concrete candidate interpretations rather than
+    guessing and translating anyway; the person's next message (their own wording, or one
+    of these options verbatim) becomes the next turn's raw_input like any other message."""
+
+    terminal_state: Literal["needs_clarification"] = "needs_clarification"
+    clarifying_question: str
+    options: list[str] = []
+
+
 TurnResponse = Annotated[
     Union[
         AnsweredTurn, RefusedTurn, OutOfScopeTurn, NoEvidenceTurn, SplitTurn,
-        DistressTurn, PracticalSupportTurn, GreetingTurn,
+        DistressTurn, PracticalSupportTurn, GreetingTurn, NeedsClarificationTurn,
     ],
     Field(discriminator="terminal_state"),
 ]

@@ -51,6 +51,7 @@ _STATE_STYLE = {
     "distress": "bold magenta",
     "practical_support": "bold cyan",
     "greeting": "bold blue",
+    "needs_clarification": "bold cyan",
 }
 
 

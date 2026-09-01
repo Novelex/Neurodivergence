@@ -61,9 +61,10 @@ exception when duplicate_object then null;
 end $$;
 
 do $$ begin
-  -- §8 — eight values (originally six; practical_support and greeting added later).
-  -- 'answered' is the ordinary case; the rest are the system deliberately stopping
-  -- short (or, for greeting, not needing to search at all), and are as much a product
+  -- §8 — nine values (originally six; practical_support, greeting, and
+  -- needs_clarification added later). 'answered' is the ordinary case; the rest are the
+  -- system deliberately stopping short (or, for greeting, not needing to search at all,
+  -- or for needs_clarification, asking before guessing), and are as much a product
   -- decision as the answer is.
   create type terminal_state as enum (
     'answered',
@@ -73,7 +74,8 @@ do $$ begin
     'split',
     'distress',
     'practical_support',
-    'greeting'
+    'greeting',
+    'needs_clarification'
   );
 exception when duplicate_object then null;
 end $$;
@@ -81,6 +83,7 @@ end $$;
 do $$ begin
   alter type terminal_state add value if not exists 'practical_support';
   alter type terminal_state add value if not exists 'greeting';
+  alter type terminal_state add value if not exists 'needs_clarification';
 exception when duplicate_object then null;
 end $$;
 

@@ -11,8 +11,9 @@ This is a real trade against §4's determinism guarantee, accepted deliberately 
 single-developer prototype at this budget — see live_search.py's docstring for the honest
 accounting of what that costs.
 
-Seven terminal_state values (§8, plus practical_support): answered, refused, out_of_scope,
-no_evidence, split, distress, practical_support. This module is the state machine — no
+Nine terminal_state values (§8's original six, plus practical_support, greeting, and
+needs_clarification): answered, refused, out_of_scope, no_evidence, split, distress,
+practical_support, greeting, needs_clarification. This module is the state machine — no
 agent here decides what runs next.
 
 Construct disambiguation (§7.4) is not wired in — it only fires when the SQL join
@@ -31,7 +32,7 @@ from dataclasses import dataclass, field
 
 from neurodiversity import community_accounts, console_log as log
 from neurodiversity import practical_resources
-from neurodiversity.agents import citation_checker, greeter, reranker, scope_guard, translator, writer
+from neurodiversity.agents import broadener, citation_checker, general_chat, greeter, reranker, scope_guard, translator, writer
 from neurodiversity.query import evidence_grade, live_search, ranking, retrieval
 
 MIN_CANDIDATES_FOR_ANSWER = 1
@@ -54,6 +55,14 @@ THIN_COVERAGE_THRESHOLD = 3
 # genuinely use. Raised to 0.6 on that evidence; still a heuristic, not a tuned value, and
 # should keep being revisited as more real query traffic exists to check it against.
 THIN_SIMILARITY_THRESHOLD = 0.6
+# Genuinely zero relevant literature is rare — the more common failure is a research_query
+# specific enough that retrieval and live search don't surface what does exist on the
+# wider topic. Rather than declare no_evidence the first time coverage looks thin, widen
+# the query up to this many times (agents/broadener.py), retrying retrieval + live search
+# each time, before actually giving up. Capped, not unbounded — same §2.5 "loop on facts,
+# not judgement" principle as the citation-checker retry: this widens the SEARCH honestly
+# each time, it never lets the writer answer from citations that don't verify.
+MAX_BROADEN_ATTEMPTS = 2
 
 @dataclass
 class TurnResult:
@@ -64,6 +73,7 @@ class TurnResult:
     evidence: dict | None = None  # counts only, never a probability — see api/schemas.py's EvidenceSummary
     resources: list = field(default_factory=list)  # practical_support only — static table, never model output
     community_corroboration: dict | None = None  # no_evidence only — static table, never model output (§9.1)
+    clarification_options: list = field(default_factory=list)  # needs_clarification only
     debug: dict = field(default_factory=dict)
 
 
@@ -97,9 +107,17 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
         reply = greeter.greet()
         return TurnResult(terminal_state="greeting", prose=reply.output.message)
     if classification == "out_of_domain":
-        return TurnResult(terminal_state="out_of_scope")
+        chat = general_chat.reply(raw_input)
+        return TurnResult(terminal_state="out_of_scope", prose=chat.output.message)
 
     trans = translator.translate(raw_input, context_summary, recent_turns)
+    if trans.output.needs_clarification:
+        log.stage("translator", "needs_clarification", style="cyan")
+        return TurnResult(
+            terminal_state="needs_clarification",
+            prose=trans.output.clarifying_question,
+            clarification_options=trans.output.clarification_options,
+        )
     research_query = trans.output.research_query
     reflection = trans.output.reflection
     log.stage("translator", f"research_query={research_query!r}")
@@ -117,32 +135,47 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
             debug={"research_query": research_query},
         )
 
-    candidates = retrieval.retrieve(research_query, match_count=20)
-    distinct_papers = {c.paper_id for c in candidates}
-    top_similarity = max((c.similarity for c in candidates), default=0.0)
-    log.stage("retrieve", f"{len(candidates)} candidates from {len(distinct_papers)} distinct papers (top similarity {top_similarity:.3f})", style="blue")
-
     live_contexts = {}
-    is_thin = len(distinct_papers) < THIN_COVERAGE_THRESHOLD
-    is_low_relevance = top_similarity < THIN_SIMILARITY_THRESHOLD
-    if is_thin or is_low_relevance:
-        # Coverage is measured in distinct papers AND relevance, not chunk count alone —
-        # 20 chunks from 2 papers is still thin, but so is 8 papers that are merely
-        # loosely on-topic rather than actually relevant to this specific question. A
-        # synthesis answer drawn from too few or too-tangential sources is exactly what
-        # tempts the writer to pad a claim with real-but-uncited specifics, or to answer
-        # from whatever's nearest instead of what's actually relevant — so trigger live
-        # search on either signal, not just paper count.
-        # Phase A only here — cheap, no GPT-4o call. Everything found gets fetched,
-        # chunked, and embedded; nothing gets classified or audited yet.
-        log.stage("live_search", f"triggering: thin={is_thin}, low_relevance={is_low_relevance}", style="magenta")
-        live_contexts = live_search.ingest_cheap_for_query(research_query)
-        log.sub(f"cheaply ingested {len(live_contexts)} papers (not yet classified/audited)")
-        if live_contexts:
-            candidates = retrieval.retrieve(research_query, match_count=20)
-            distinct_papers = {c.paper_id for c in candidates}
-            top_similarity = max((c.similarity for c in candidates), default=0.0)
-            log.stage("retrieve", f"{len(candidates)} candidates from {len(distinct_papers)} distinct papers after live search (top similarity {top_similarity:.3f})", style="blue")
+    for broaden_attempt in range(MAX_BROADEN_ATTEMPTS + 1):
+        candidates = retrieval.retrieve(research_query, match_count=20)
+        distinct_papers = {c.paper_id for c in candidates}
+        top_similarity = max((c.similarity for c in candidates), default=0.0)
+        log.stage("retrieve", f"{len(candidates)} candidates from {len(distinct_papers)} distinct papers (top similarity {top_similarity:.3f})", style="blue")
+
+        is_thin = len(distinct_papers) < THIN_COVERAGE_THRESHOLD
+        is_low_relevance = top_similarity < THIN_SIMILARITY_THRESHOLD
+        if is_thin or is_low_relevance:
+            # Coverage is measured in distinct papers AND relevance, not chunk count alone
+            # — 20 chunks from 2 papers is still thin, but so is 8 papers that are merely
+            # loosely on-topic rather than actually relevant to this specific question. A
+            # synthesis answer drawn from too few or too-tangential sources is exactly what
+            # tempts the writer to pad a claim with real-but-uncited specifics, or to answer
+            # from whatever's nearest instead of what's actually relevant — so trigger live
+            # search on either signal, not just paper count.
+            # Phase A only here — cheap, no GPT-4o call. Everything found gets fetched,
+            # chunked, and embedded; nothing gets classified or audited yet.
+            log.stage("live_search", f"triggering: thin={is_thin}, low_relevance={is_low_relevance}", style="magenta")
+            live_contexts = live_search.ingest_cheap_for_query(research_query)
+            log.sub(f"cheaply ingested {len(live_contexts)} papers (not yet classified/audited)")
+            if live_contexts:
+                candidates = retrieval.retrieve(research_query, match_count=20)
+                distinct_papers = {c.paper_id for c in candidates}
+                top_similarity = max((c.similarity for c in candidates), default=0.0)
+                log.stage("retrieve", f"{len(candidates)} candidates from {len(distinct_papers)} distinct papers after live search (top similarity {top_similarity:.3f})", style="blue")
+                is_thin = len(distinct_papers) < THIN_COVERAGE_THRESHOLD
+                is_low_relevance = top_similarity < THIN_SIMILARITY_THRESHOLD
+
+        if not is_thin and not is_low_relevance:
+            break  # good coverage — proceed with this research_query as-is
+
+        if broaden_attempt == MAX_BROADEN_ATTEMPTS:
+            break  # widened as far as the cap allows — proceed with whatever this found;
+            # the len(candidates) check right below is what actually falls back honestly
+
+        widened = broadener.broaden(research_query)
+        log.stage("broaden", f"{research_query!r} -> {widened.output.broadened_query!r}", style="magenta")
+        research_query = widened.output.broadened_query
+        live_contexts = {}  # discard the narrower query's live-search results; not relevant to the new one
 
     if len(candidates) < MIN_CANDIDATES_FOR_ANSWER:
         return _no_evidence()

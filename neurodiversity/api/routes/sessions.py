@@ -24,6 +24,7 @@ from neurodiversity.api.schemas import (
     AnsweredTurn,
     DistressTurn,
     GreetingTurn,
+    NeedsClarificationTurn,
     NoEvidenceTurn,
     OutOfScopeTurn,
     PracticalSupportTurn,
@@ -49,6 +50,7 @@ _TERMINAL_STATE_MODELS = {
     "distress": DistressTurn,
     "practical_support": PracticalSupportTurn,
     "greeting": GreetingTurn,
+    "needs_clarification": NeedsClarificationTurn,
 }
 
 # Short-term session memory (agents/summarizer.py). Exact window size — the last N
@@ -195,8 +197,10 @@ def _persist_and_build_response(db, session_id: str, result):
         return model(reflection=result.reflection)
     if result.terminal_state == "practical_support":
         return model(resources=result.resources)
-    if result.terminal_state == "greeting":
+    if result.terminal_state in ("greeting", "out_of_scope"):
         return model(message=result.prose)
+    if result.terminal_state == "needs_clarification":
+        return model(clarifying_question=result.prose, options=result.clarification_options)
     return model()
 
 
