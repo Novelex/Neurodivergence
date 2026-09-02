@@ -68,6 +68,27 @@ MAX_BROADEN_ATTEMPTS = 2
 # fully-ordered chunk list before it reaches the writer, purely for latency.
 MAX_WRITER_CHUNKS = 10
 
+# Deliberately narrow — exact matches only (after trim/lowercase/punctuation-strip), not
+# a general keyword classifier. A previous version of this idea tried to cover greetings
+# broadly and missed "hy" (a typo of "hi"), which then fell through to out_of_domain's
+# cold boundary message — that's why detection normally lives in scope_guard.classify()'s
+# full model call instead. This set exists ONLY to shortcut the single most common,
+# completely unambiguous case (a bare "hi"/"hey"/etc, nothing else in the message) so
+# THAT case doesn't pay for two full LLM calls when one is enough. Anything not an exact
+# match — including typos, or a greeting with a real question attached — still goes
+# through the full scope_guard classification, unchanged.
+_UNAMBIGUOUS_GREETINGS = {
+    "hi", "hey", "hello", "hiya", "yo",
+    "good morning", "good afternoon", "good evening",
+    "how are you", "how are you doing",
+    "thanks", "thank you", "bye", "goodbye",
+}
+
+
+def _is_unambiguous_greeting(raw_input: str) -> bool:
+    return raw_input.strip().lower().rstrip("!.?,") in _UNAMBIGUOUS_GREETINGS
+
+
 @dataclass
 class TurnResult:
     terminal_state: str
@@ -95,6 +116,18 @@ def handle_turn(raw_input: str, context_summary: str = "", recent_turns: list[tu
 
 
 def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[str, str]]) -> TurnResult:
+    if _is_unambiguous_greeting(raw_input):
+        # Fast path, exact-match only — real testing found a bare "Hey" costing two full
+        # sequential LLM round trips (scope_guard just to classify it as a greeting, then
+        # greeter to generate the reply) after greeting detection was folded into
+        # scope_guard's classification to fix a typo bug ("hy" wasn't in a keyword list).
+        # This skips scope_guard ONLY for an exact, unambiguous match — anything not in
+        # this small set, typos included, still goes through the full smart
+        # classification below exactly as before, so that fix isn't undone.
+        log.stage("greeting", "exact match — skipping scope_guard", style="cyan")
+        reply = greeter.greet()
+        return TurnResult(terminal_state="greeting", prose=reply.output.message)
+
     scope = scope_guard.classify(raw_input)
     classification = scope.output.classification.value
     log.stage("scope_guard", classification)
