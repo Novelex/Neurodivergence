@@ -82,6 +82,50 @@ function el(html) {
   return t.content.firstElementChild;
 }
 
+// Small markdown-lite renderer for free-text model replies (general_chat, greeter,
+// distress body text) — bold, numbered/bulleted lists, paragraph breaks. Not used for
+// the citation-backed answer prose (renderProse), which is deliberately plain,
+// sentence-by-sentence text, not free-form markdown. Escapes first, then applies a
+// limited set of transforms — no raw HTML from model output ever reaches the DOM.
+function renderMarkdownLite(text) {
+  const escaped = escapeHtml(text ?? "");
+  const withInline = escaped
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(?<!\*)\*([^*]+?)\*(?!\*)/g, "<em>$1</em>")
+    // Models often run list items together on one line ("...nearby. 2. Call Out: Use...")
+    // instead of one per line — force a break before a numbered/bulleted marker that
+    // isn't already at the start of one, so the list-detection below still catches it.
+    .replace(/([^\n])\s+(\d+[.)]\s+\S)/g, "$1\n$2")
+    .replace(/([^\n])\s+([-*•]\s+\S)/g, "$1\n$2");
+
+  const lines = withInline.split(/\n+/);
+  const blocks = [];
+  let currentList = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const numbered = trimmed.match(/^\d+[.)]\s+(.*)/);
+    const bulleted = trimmed.match(/^[-*•]\s+(.*)/);
+    if (numbered) {
+      if (!currentList || currentList.type !== "ol") { if (currentList) blocks.push(currentList); currentList = { type: "ol", items: [] }; }
+      currentList.items.push(numbered[1]);
+    } else if (bulleted) {
+      if (!currentList || currentList.type !== "ul") { if (currentList) blocks.push(currentList); currentList = { type: "ul", items: [] }; }
+      currentList.items.push(bulleted[1]);
+    } else {
+      if (currentList) { blocks.push(currentList); currentList = null; }
+      if (trimmed) blocks.push({ type: "p", text: trimmed });
+    }
+  }
+  if (currentList) blocks.push(currentList);
+
+  return blocks.map(b => {
+    if (b.type === "p") return `<p>${b.text}</p>`;
+    const listClass = b.type === "ol" ? "list-decimal" : "list-disc";
+    return `<${b.type} class="${listClass} list-inside space-y-0.5 my-1">${b.items.map(i => `<li>${i}</li>`).join("")}</${b.type}>`;
+  }).join("");
+}
+
 async function createSession() {
   sessionIndicator.textContent = "connecting…";
   try {
@@ -311,7 +355,7 @@ function appendStateMessage(state, data) {
           <span>${style.icon}</span>
           <div class="flex-1">
             ${data.reflection ? `<p class="text-xs opacity-70 italic mb-1">${escapeHtml(data.reflection)}</p>` : ""}
-            <p>${escapeHtml(bodyText)}</p>
+            <div class="space-y-1">${renderMarkdownLite(bodyText)}</div>
             ${renderResources(data.resources)}
             ${renderCommunityCorroboration(data.community_corroboration)}
             ${data.followup_prompt ? `
