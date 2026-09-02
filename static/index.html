@@ -348,6 +348,7 @@ function appendStateMessage(state, data) {
   // nothing introducing them; it is not a substitute for that review.
   const bodyText = data.message || data.clarifying_question
     || (state === "distress" ? "If you need to talk to someone right now, real support is available:" : "");
+  const hasResearch = data.citations && data.citations.length;
   const node = el(`
     <div class="msg-enter flex justify-start">
       <div class="border rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[85%] text-sm ${style.bg}">
@@ -356,6 +357,18 @@ function appendStateMessage(state, data) {
           <div class="flex-1">
             ${data.reflection ? `<p class="text-xs opacity-70 italic mb-1">${escapeHtml(data.reflection)}</p>` : ""}
             <div class="space-y-1">${renderMarkdownLite(bodyText)}</div>
+            ${hasResearch ? `
+              <div class="mt-2 pt-2 border-t border-black/10 space-y-2">
+                <p class="leading-relaxed research-prose"></p>
+                <div>${renderEvidence(data.evidence)}</div>
+                <details class="citations-details">
+                  <summary class="text-xs font-medium opacity-70 cursor-pointer hover:opacity-100">
+                    show ${data.citations.length} citation${data.citations.length === 1 ? "" : "s"}
+                  </summary>
+                  <div class="mt-2 space-y-2 citations-list"></div>
+                </details>
+              </div>
+            ` : ""}
             ${renderResources(data.resources)}
             ${renderCommunityCorroboration(data.community_corroboration)}
             ${data.followup_prompt ? `
@@ -379,6 +392,10 @@ function appendStateMessage(state, data) {
       </div>
     </div>
   `);
+  if (hasResearch) {
+    node.querySelector(".research-prose").innerHTML = renderProse(data.prose, data.citations);
+    node.querySelector(".citations-list").innerHTML = renderCitations(data.citations);
+  }
   chatLog.appendChild(node);
   chatLog.scrollTop = chatLog.scrollHeight;
 }

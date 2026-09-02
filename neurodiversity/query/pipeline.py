@@ -139,7 +139,29 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
     if classification == "practical_support":
         topic = scope.output.practical_topic.value if scope.output.practical_topic else None
         log.sub(f"practical_topic={topic!r}")
-        return TurnResult(terminal_state="practical_support", resources=practical_resources.for_topic(topic))
+        resources = practical_resources.for_topic(topic)
+        # A practical need connected to a condition is NOT mutually exclusive with a real
+        # research question about the same thing — real testing case: workplace
+        # harassment/discrimination experienced by autistic/ADHD people is genuinely
+        # studied (employment outcomes, disclosure, accommodations effectiveness), even
+        # though "what does the law say" itself isn't literature-answerable. Rather than
+        # route straight to organizations and never check, run the SAME research pipeline
+        # underneath (matching §9.2's distress pattern: safety/practical content shown
+        # unconditionally, the research angle attempted alongside it, never assumed away)
+        # and attach whatever literature-backed answer it finds alongside the resources.
+        log.stage("practical_support", "also attempting research pipeline", style="cyan")
+        research_result = _run_research(raw_input, context_summary, recent_turns)
+        if research_result.terminal_state == "answered":
+            return TurnResult(
+                terminal_state="practical_support",
+                reflection=research_result.reflection,
+                prose=research_result.prose,
+                citations=research_result.citations,
+                evidence=research_result.evidence,
+                resources=resources,
+                debug=research_result.debug,
+            )
+        return TurnResult(terminal_state="practical_support", resources=resources)
     if classification == "greeting":
         reply = greeter.greet()
         return TurnResult(terminal_state="greeting", prose=reply.output.message)
@@ -151,6 +173,14 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
         # was just the first path that needed it.
         return TurnResult(terminal_state="out_of_scope", prose=chat.output.message, debug={"research_query": chat.output.topic})
 
+    return _run_research(raw_input, context_summary, recent_turns)
+
+
+def _run_research(raw_input: str, context_summary: str, recent_turns: list[tuple[str, str]]) -> TurnResult:
+    """The full translator -> retrieve -> live_search -> broaden -> rerank -> rank ->
+    writer -> citation_checker chain. Called for "answerable" classifications directly,
+    and ALSO for "practical_support" ones (see above) so a practical need connected to a
+    condition still gets checked against the literature, not routed past it."""
     trans = translator.translate(raw_input, context_summary, recent_turns)
     if trans.output.needs_clarification:
         log.stage("translator", "needs_clarification", style="cyan")
