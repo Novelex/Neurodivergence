@@ -336,6 +336,15 @@ def _run_research(raw_input: str, context_summary: str, recent_turns: list[tuple
             # has nothing in it, which is worse than declining outright.
             log.warn("writer produced zero citations — no_evidence, not an empty answered")
             return _no_evidence()
+        # Renumbered consecutively from 1, always — not just after salvage. Real testing
+        # showed a real answer displaying "[1]... [3]" with no [2]: salvage correctly
+        # dropped a flagged citation_number 2, but kept the original (now gapped)
+        # numbering on what survived. A missing number in the middle of a citation list
+        # reads as a bug or a hidden citation, not as "one was safely removed" — there is
+        # no legitimate reason for a reader-facing citation list to skip a number.
+        verified_citations = [
+            c.model_copy(update={"citation_number": i}) for i, c in enumerate(verified_citations, start=1)
+        ]
         prose_text = f"{opening.strip()} {_render_prose(verified_citations)}" if opening.strip() else _render_prose(verified_citations)
         cited_paper_ids = {q.paper_id for c in verified_citations for q in c.supporting_quotes}
         site_counts = [
