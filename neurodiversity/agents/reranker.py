@@ -1,13 +1,19 @@
 """Reranker — not one of the 11 agents. See docs/agents.md, working spec §7.3.
 
-Query path, between retrieve and the deterministic SQL rank. GPT-4o, temp 0, prompted
-for relevance ordering only — never quality. Quality ordering stays entirely in
+Query path, between retrieve and the deterministic SQL rank. Temp 0, prompted for
+relevance ordering only — never quality. Quality ordering stays entirely in
 query/ranking.py; this call must never be influenced by anything that owns.
+
+Moved to the smaller mini model (from gpt-4o) for latency — this is a single relevance
+signal, not the final word: the deterministic SQL quality rank and the writer's own
+citation discipline both come after it, so a slightly less sharp ordering here doesn't
+compromise the answer's correctness the way a mistake in the writer or citation checker
+would.
 """
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import AgentResult, run_agent
+from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
 
 PROMPT_VERSION = "v1"
 
@@ -41,5 +47,6 @@ def rerank(research_query: str, candidates: list[dict]) -> AgentResult:
         user_message=candidates_block,
         output_model=RerankResult,
         prompt_version=PROMPT_VERSION,
+        model=MODEL_MINI,
         temperature=0.0,
     )

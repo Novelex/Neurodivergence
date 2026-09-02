@@ -28,6 +28,7 @@ that deserves its own pass, not a stub bolted onto this proof.
 
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from neurodiversity import community_accounts, console_log as log
@@ -63,6 +64,9 @@ THIN_SIMILARITY_THRESHOLD = 0.6
 # not judgement" principle as the citation-checker retry: this widens the SEARCH honestly
 # each time, it never lets the writer answer from citations that don't verify.
 MAX_BROADEN_ATTEMPTS = 2
+# See its use below (writer_input construction) for the full reasoning — caps the final,
+# fully-ordered chunk list before it reaches the writer, purely for latency.
+MAX_WRITER_CHUNKS = 10
 
 @dataclass
 class TurnResult:
@@ -184,29 +188,48 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
     if len(candidates) < MIN_CANDIDATES_FOR_ANSWER:
         return _no_evidence()
 
+    candidates_by_id = {c.chunk_id: c for c in candidates}
+    # Computed from `candidates` directly, not from rerank's output — reranker.rerank()'s
+    # own contract guarantees it never drops or adds a chunk_id, only reorders them, so
+    # the SET of papers behind the candidate chunks is identical either way. That means
+    # reranking and the Phase B audit+rank chain don't actually depend on each other at
+    # all, even though they used to run strictly one after another — running them
+    # concurrently below is a real wall-clock win with no change to what gets computed.
+    unique_paper_ids = {c.paper_id for c in candidates}
+
+    def _rank_papers() -> list[dict]:
+        # Phase B — the expensive part — only now, only for papers that actually survived
+        # into the candidate set. A paper live_search fetched but that never surfaced here
+        # never gets classified or audited, and never costs that money (§5.8's logic,
+        # applied synchronously instead of via a background worker).
+        if live_contexts:
+            live_search.audit_surviving_papers(unique_paper_ids, live_contexts)
+        return ranking.rank(list(unique_paper_ids))
+
     rerank_input = [{"chunk_id": c.chunk_id, "text": c.text} for c in candidates]
-    reranked = reranker.rerank(research_query, rerank_input)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rerank_future = pool.submit(reranker.rerank, research_query, rerank_input)
+        rank_future = pool.submit(_rank_papers)
+        reranked = rerank_future.result()
+        paper_ranks = rank_future.result()
+
     ranked_ids_by_relevance = reranked.output.ranked_chunk_ids
     log.stage("rerank", f"reordered {len(ranked_ids_by_relevance)} chunk_ids", style="blue")
-
-    candidates_by_id = {c.chunk_id: c for c in candidates}
-    unique_paper_ids = {candidates_by_id[cid].paper_id for cid in ranked_ids_by_relevance if cid in candidates_by_id}
-
-    # Phase B — the expensive part — only now, only for papers that actually survived
-    # into the reranked set. A paper live_search fetched but that never surfaced here
-    # never gets classified or audited, and never costs that money (§5.8's logic,
-    # applied synchronously instead of via a background worker).
-    if live_contexts:
-        live_search.audit_surviving_papers(unique_paper_ids, live_contexts)
-
-    paper_ranks = ranking.rank(list(unique_paper_ids))
     paper_rank_order = {row["paper_id"]: i for i, row in enumerate(paper_ranks)}
     log.stage("rank", f"{len(paper_ranks)} papers ranked", style="blue")
 
     ranked_chunks = sorted(
         (candidates_by_id[cid] for cid in ranked_ids_by_relevance if cid in candidates_by_id),
         key=lambda c: paper_rank_order.get(c.paper_id, len(paper_rank_order)),
-    )
+    )[:MAX_WRITER_CHUNKS]
+    # Capped here — after BOTH relevance reranking and paper-quality ranking have already
+    # ordered the full candidate set — not earlier. Real testing found response time
+    # dominated in part by the writer processing every reranked chunk (up to ~20, each up
+    # to 1500 chars) on every call, doubled again on a citation-check retry. Slicing the
+    # final, fully-ordered list cuts that prompt size without skipping any of the
+    # relevance/quality ordering logic itself. Real, accepted tradeoff for speed: fewer
+    # chunks reaching the writer can occasionally mean fewer independent papers cited than
+    # an uncapped run would have found.
     writer_input = [
         {"chunk_id": c.chunk_id, "paper_id": c.paper_id, "text": c.text} for c in ranked_chunks
     ]

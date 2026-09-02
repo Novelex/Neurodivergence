@@ -24,7 +24,7 @@ from enum import Enum
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import AgentResult, run_agent
+from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
 
 PROMPT_VERSION = "v6"
 
@@ -115,5 +115,6 @@ def classify(raw_input: str) -> AgentResult:
         user_message=raw_input,
         output_model=ScopeResult,
         prompt_version=PROMPT_VERSION,
+        model=MODEL_MINI,
         temperature=0.0,
     )

@@ -22,7 +22,7 @@ isn't just for the research path.
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import AgentResult, run_agent
+from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
 
 PROMPT_VERSION = "v2"
 
@@ -68,5 +68,6 @@ def reply(raw_input: str, context_summary: str = "", recent_turns: list[tuple[st
         user_message=user_message,
         output_model=ChatOutput,
         prompt_version=PROMPT_VERSION,
+        model=MODEL_MINI,
         temperature=0.3,
     )
