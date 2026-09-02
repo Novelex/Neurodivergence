@@ -20,12 +20,23 @@ Already-known papers are never reprocessed (ingest_cheap's own pubmed_id check h
 that), so a repeated or related question mostly hits cache and costs little.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from neurodiversity import console_log as log
 from neurodiversity.db.client import get_service_client
 from neurodiversity.ingestion.process_paper import IngestResult, classify_and_audit, ingest_cheap
 from neurodiversity.ingestion.sources import pubmed
 
 MAX_LIVE_RESULTS = 8
+# Real testing found turns taking far longer than expected — traced to this module
+# processing up to MAX_LIVE_RESULTS papers strictly one at a time, each a real network
+# fetch (PMC) plus OpenAI call(s), pure sequential I/O wait. Papers are fully independent
+# (separate DB rows keyed by pubmed_id/paper_id, no shared mutable state across
+# iterations), so running them concurrently is safe and changes nothing about the
+# result — same papers, same writes, just not waited on one at a time. Capped, not
+# unbounded, to stay polite to PMC/OpenAI rate limits rather than firing 8 requests at
+# once with no ceiling.
+MAX_CONCURRENT_PAPERS = 4
 
 
 def ingest_cheap_for_query(research_query: str, max_results: int = MAX_LIVE_RESULTS) -> dict[str, IngestResult]:
@@ -38,22 +49,32 @@ def ingest_cheap_for_query(research_query: str, max_results: int = MAX_LIVE_RESU
 
     papers = pubmed.efetch(pmids)
     results = {}
-    for paper in papers:
-        try:
-            ingest_result = ingest_cheap(db, paper)
-            results[ingest_result.paper_id] = ingest_result
-        except Exception as exc:
-            log.warn(f"failed to ingest {paper.pubmed_id}: {exc}")
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_PAPERS) as pool:
+        futures = {pool.submit(ingest_cheap, db, paper): paper for paper in papers}
+        for future in as_completed(futures):
+            paper = futures[future]
+            try:
+                ingest_result = future.result()
+                results[ingest_result.paper_id] = ingest_result
+            except Exception as exc:
+                log.warn(f"failed to ingest {paper.pubmed_id}: {exc}")
     return results
 
 
 def audit_surviving_papers(paper_ids: set[str], contexts: dict[str, IngestResult]) -> None:
     """Phase B — call only for paper_ids that actually survived retrieval as relevant."""
     db = get_service_client()
-    for paper_id in paper_ids:
-        ctx = contexts.get(paper_id)
-        if ctx is None:
-            continue  # not one of ours (already existed before this search) — nothing to defer
-        if ctx.already_processed:
-            continue
-        classify_and_audit(db, ctx)
+    to_audit = [
+        contexts[pid] for pid in paper_ids
+        if pid in contexts and not contexts[pid].already_processed
+    ]
+    if not to_audit:
+        return
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_PAPERS) as pool:
+        futures = {pool.submit(classify_and_audit, db, ctx): ctx for ctx in to_audit}
+        for future in as_completed(futures):
+            ctx = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                log.warn(f"failed to classify/audit {ctx.paper_id}: {exc}")
