@@ -129,7 +129,7 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
         reply = greeter.greet()
         return TurnResult(terminal_state="greeting", prose=reply.output.message)
 
-    scope = scope_guard.classify(raw_input)
+    scope = scope_guard.classify(raw_input, context_summary, recent_turns)
     classification = scope.output.classification.value
     log.stage("scope_guard", classification)
 

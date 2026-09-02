@@ -107,7 +107,16 @@ order: distress > diagnostic_ask > practical_support > greeting > out_of_domain 
 answerable. Never resolve ambiguity by choosing answerable. This does not make a stated
 diagnosis ambiguous by itself — ambiguity means genuine uncertainty about which category
 fits, not the mere presence of a personal disclosure alongside an otherwise clear,
-researchable question."""
+researchable question.
+
+You may be given prior conversation context — a running summary and/or the last few
+exchanges. Use it to resolve a short follow-up that has no content on its own — e.g. if
+the prior exchange was about whether pets play a different role in autistic people's
+lives, and the new message is just "what research says about it", classify that as
+answerable, using the established topic as the referent for "it". A follow-up with no
+topic of its own is not automatically out_of_domain; check the context first. If the new
+message is already a complete, standalone message, ignore the context and classify it
+as normal — do not let a prior topic pull an unrelated new message into its category."""
 
 
 class ScopeClassification(str, Enum):
@@ -131,10 +140,27 @@ class ScopeResult(BaseModel):
     practical_topic: PracticalTopic | None = None
 
 
-def classify(raw_input: str) -> AgentResult:
+def classify(raw_input: str, context_summary: str = "", recent_turns: list[tuple[str, str]] | None = None) -> AgentResult:
+    """context_summary/recent_turns: same shape as translator.translate's and
+    general_chat.reply's — short-term session memory. Real testing found scope_guard was
+    the one classification step in the pipeline that never received this, so a
+    contentless follow-up ("what research says about it") was judged completely blind to
+    the established topic and defaulted to out_of_domain even when the prior exchange had
+    made the topic perfectly clear."""
+    user_message = raw_input
+    if context_summary or recent_turns:
+        context_block = ""
+        if context_summary:
+            context_block += f"Summary of earlier conversation: {context_summary}\n\n"
+        if recent_turns:
+            context_block += "Recent exchanges:\n" + "\n".join(
+                f"- {q}" + (f" ({r})" if r and r != q else "") for q, r in recent_turns
+            ) + "\n\n"
+        user_message = f"{context_block}New message: {raw_input}"
+
     return run_agent(
         system_prompt=SYSTEM_PROMPT,
-        user_message=raw_input,
+        user_message=user_message,
         output_model=ScopeResult,
         prompt_version=PROMPT_VERSION,
         # No model= override — uses run_agent's gpt-4o default. See module docstring for
