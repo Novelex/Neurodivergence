@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import TypeVar
 
+import openai
 from openai import OpenAI
 from pydantic import BaseModel
 
@@ -50,6 +51,16 @@ class AgentResult:
     prompt_version: str
 
 
+# Some newer models (confirmed on gpt-5-nano, real error: 400 "Unsupported value:
+# 'temperature' does not support 0.0 with this model. Only the default (1) value is
+# supported" — the same restriction is known to apply to OpenAI's reasoning-family
+# models generally, e.g. o1/o3) reject any non-default temperature outright, but every
+# low-temperature call in this system was written assuming temperature is always
+# honored. Tracked here rather than hardcoded by name, so a future model with the same
+# restriction is handled the same way automatically, without needing another manual fix.
+_TEMPERATURE_UNSUPPORTED_MODELS: set[str] = set()
+
+
 def run_agent(
     system_prompt: str,
     user_message: str,
@@ -60,15 +71,31 @@ def run_agent(
 ) -> AgentResult:
     """One schema-constrained call. Never called with tools; never decides what runs next."""
     client = get_client()
-    completion = client.beta.chat.completions.parse(
+    kwargs = dict(
         model=model,
-        temperature=temperature,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
         response_format=output_model,
     )
+    if model not in _TEMPERATURE_UNSUPPORTED_MODELS:
+        kwargs["temperature"] = temperature
+
+    try:
+        completion = client.beta.chat.completions.parse(**kwargs)
+    except openai.BadRequestError as exc:
+        if "temperature" in kwargs and "temperature" in str(exc).lower():
+            # Retry once without it rather than crash the whole turn over a sampling
+            # parameter this model doesn't support. Remembered for next time so every
+            # later call to this same model skips straight past the failing attempt
+            # instead of paying for a guaranteed-to-fail request first.
+            _TEMPERATURE_UNSUPPORTED_MODELS.add(model)
+            kwargs.pop("temperature")
+            completion = client.beta.chat.completions.parse(**kwargs)
+        else:
+            raise
+
     parsed = completion.choices[0].message.parsed
     if parsed is None:
         raise ValueError(f"Model returned no parsed output (refusal or parse failure): {completion}")
