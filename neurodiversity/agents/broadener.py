@@ -11,7 +11,7 @@ no_evidence, honestly, if even a widened search finds nothing real to cite).
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import MODEL_NANO, AgentResult, run_agent
+from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
 
 PROMPT_VERSION = "v1"
 
@@ -35,6 +35,6 @@ def broaden(research_query: str) -> AgentResult:
         user_message=f"Too-narrow research_query: {research_query}",
         output_model=BroadenOutput,
         prompt_version=PROMPT_VERSION,
-        model=MODEL_NANO,
+        model=MODEL_MINI,
         temperature=0.0,
     )

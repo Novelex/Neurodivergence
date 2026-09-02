@@ -22,19 +22,26 @@ T = TypeVar("T", bound=BaseModel)
 # no tiering" decision, §11, was a real latency/cost cost worth reopening — §11 already
 # names this trade explicitly).
 #
-# MODEL_NANO (gpt-5-nano, ~3x cheaper than MODEL_MINI) is for classification, extraction,
-# rewording, and casual reply agents (scope_guard, translator, broadener, greeter,
-# general_chat, summarizer, reranker) — well-defined, low-ambiguity tasks.
+# MODEL_MINI (gpt-4o-mini) is used for every agent in the system, including the writer,
+# citation_checker's semantic check, design_classifier, and every auditor — a deliberate,
+# explicit downgrade from gpt-4o, requested after being flagged: these are the calls
+# where a wrong judgment call either reaches the user directly (writer) or gets stored as
+# permanent data behind an evidence grade (classifier/auditors), and citation_checker is
+# the actual safety net against fabricated or overstated claims. If real answers start
+# showing more citation-checker flags or the writer re-introducing fabricated specifics
+# more often than before this change, that is the tradeoff actually landing — the fix is
+# moving these back to gpt-4o, not tightening prompts further.
 #
-# MODEL_MINI (gpt-4o-mini) is now used for the writer, citation_checker's semantic check,
-# design_classifier, and every auditor — a deliberate, explicit downgrade from gpt-4o,
-# requested after being flagged: these are the calls where a wrong judgment call either
-# reaches the user directly (writer) or gets stored as permanent data behind an evidence
-# grade (classifier/auditors), and citation_checker is the actual safety net against
-# fabricated or overstated claims. If real answers start showing more citation-checker
-# flags or the writer re-introducing fabricated specifics more often than before this
-# change, that is the tradeoff actually landing — the fix is moving these back to gpt-4o,
-# not tightening prompts further.
+# MODEL_NANO (gpt-5-nano) was tried for the simpler classification/extraction agents
+# (scope_guard, translator, broadener, greeter, general_chat, summarizer, reranker) on
+# the assumption that a cheaper model would also be faster — real, timed testing on the
+# identical call proved the opposite: gpt-5-nano took 9.27s against gpt-4o-mini's 1.95s
+# for the same scope_guard classification, roughly 5x slower despite being ~3x cheaper.
+# It's a reasoning-family model, and reasoning models can cost real wall-clock latency in
+# internal reasoning tokens even when priced lower — cost and speed are NOT the same
+# axis, and optimizing for one blind to the other regressed the thing this project has
+# repeatedly prioritized (speed). Reverted; kept defined here only as a documented
+# warning against re-trying this swap without re-verifying actual latency first.
 MODEL_NANO = "gpt-5-nano"
 MODEL_MINI = "gpt-4o-mini"
 
