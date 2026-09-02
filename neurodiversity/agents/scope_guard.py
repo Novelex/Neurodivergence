@@ -18,15 +18,27 @@ testing showed it fails on anything not in its exact list ("hy" instead of "hi" 
 through to out_of_domain). Folded into this same classification call instead: the model
 already has to read the message anyway, and recognizing a greeting — typos, variants, and
 all — is exactly the kind of judgment call a keyword list can't make but a model can.
+
+Runs on gpt-4o, not the gpt-4o-mini used everywhere else in this system — a deliberate,
+isolated exception. Real, controlled testing (identical prompt, only the model changed)
+found gpt-4o-mini reliably misclassifying plain, unambiguous grief/loss statements ("I
+lost my cat", "I just lost my cat") as distress, 3/3 on every phrasing tried, and two
+increasingly explicit prompt rewrites — including listing that exact phrase as a named
+non-example — did not fix it. gpt-4o got every one of the same test cases right with the
+identical prompt. This isn't a wording problem; it's model-specific behavior on this one
+judgment call, and distress is the working spec's own "highest-risk terminal state in the
+system" (§9.2) — not a place to keep tuning prompts around a smaller model's limitation.
+No latency cost either: gpt-4o measured faster than gpt-4o-mini on this exact call in the
+same test.
 """
 
 from enum import Enum
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
+from neurodiversity.agents.base import AgentResult, run_agent
 
-PROMPT_VERSION = "v6"
+PROMPT_VERSION = "v7"
 
 SYSTEM_PROMPT = """Classify this message into exactly one category:
 
@@ -53,14 +65,24 @@ SYSTEM_PROMPT = """Classify this message into exactly one category:
   worth its cost or backed by evidence is a question about the treatment, not the person,
   even when phrased in the first person ("should I treat my ADHD" is about the treatment
   decision, not a request to be diagnosed).
-- distress: contains indicators of self-harm risk, acute hopelessness, or crisis-level
-  language — not ordinary frustration, sadness, or the kind of exhaustion that is itself a
-  valid research topic (e.g., autistic burnout). A plain statement of an ordinary sad
-  event, with no crisis language attached, is not distress even when the word "lost" or
-  similar appears — e.g. "I just lost my cat" is sad, but it is not self-harm risk, acute
-  hopelessness, or crisis language; it is out_of_domain (unrelated to neurodevelopmental
-  conditions) unless something else in the message connects it to one. Reserve distress
-  for language that actually signals danger to the person, not for sadness alone.
+- distress: requires an AFFIRMATIVE signal of danger to the person — explicit or strongly
+  implied self-harm, suicidal ideation, or language stating they cannot go on / cannot
+  cope / it's not worth continuing. This is a bright-line, mechanical test, not a
+  judgment call about how sad a message sounds: if no such signal is present, the message
+  is NOT distress, full stop — this is never an ambiguous or close call, and the general
+  "prefer the more restrictive category when ambiguous" rule below does not apply to it,
+  because there is no ambiguity to resolve. Grief, sadness, loss, frustration, or
+  exhaustion — about anything, including a pet, a job, a relationship, or life in general
+  — is NOT distress by itself, no matter how emotionally loaded the wording is, unless an
+  actual danger signal (as defined above) is also present. Examples that are NOT
+  distress: "I lost my cat", "I just lost my cat", "I lost my job and I'm devastated",
+  "everything feels so hard right now", "I'm exhausted and don't know how much more I can
+  take of this week" (venting/exhaustion, not danger). Examples that ARE distress: "I
+  don't want to be here anymore", "I can't do this anymore, what's the point of going
+  on", "I've been thinking about ending things". When in doubt, the absence of an
+  explicit or strongly implied danger signal means classify as something else entirely
+  (out_of_domain, practical_support, or answerable, per the message's actual content) —
+  do not round an ordinary sad statement up to distress "to be safe."
 - practical_support: a real, practical need connected to being autistic/ADHD/dyslexic/
   dyspraxic/having Tourette's that is NOT researchable against the literature and NOT a
   request for diagnosis — workplace rights or discrimination, harassment, education
@@ -115,6 +137,8 @@ def classify(raw_input: str) -> AgentResult:
         user_message=raw_input,
         output_model=ScopeResult,
         prompt_version=PROMPT_VERSION,
-        model=MODEL_MINI,
+        # No model= override — uses run_agent's gpt-4o default. See module docstring for
+        # why this one agent is a deliberate exception to the gpt-4o-mini tiering used
+        # everywhere else: a real, reproducible gpt-4o-mini failure on distress detection.
         temperature=0.0,
     )
