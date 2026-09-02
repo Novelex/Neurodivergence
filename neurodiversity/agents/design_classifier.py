@@ -7,7 +7,7 @@ closed (working spec §5.2, §5.3).
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import AgentResult, run_agent
+from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
 from neurodiversity.db.models import DesignType
 
 PROMPT_VERSION = "v1"
@@ -50,5 +50,6 @@ def classify(title: str, abstract: str, methods_excerpt: str) -> AgentResult:
         user_message=user_message,
         output_model=DesignClassification,
         prompt_version=PROMPT_VERSION,
+        model=MODEL_MINI,
         temperature=0.0,
     )

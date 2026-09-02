@@ -9,7 +9,7 @@ string, while still costing next to nothing (one small, low-temperature call).
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
+from neurodiversity.agents.base import MODEL_NANO, AgentResult, run_agent
 
 PROMPT_VERSION = "v1"
 
@@ -31,6 +31,6 @@ def greet() -> AgentResult:
         user_message="(greeting received, no further content)",
         output_model=GreetingOutput,
         prompt_version=PROMPT_VERSION,
-        model=MODEL_MINI,
+        model=MODEL_NANO,
         temperature=0.3,
     )

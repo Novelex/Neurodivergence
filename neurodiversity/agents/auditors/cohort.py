@@ -10,7 +10,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import AgentResult, run_agent
+from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
 from neurodiversity.db.models import QualityCheckStatus
 
 PROMPT_VERSION = "v1"
@@ -50,5 +50,6 @@ def audit_field(full_text: str, field_name: str, field_rationale: str) -> AgentR
         user_message=f"Full text:\n\n{full_text}",
         output_model=QualityVerdict,
         prompt_version=PROMPT_VERSION,
+        model=MODEL_MINI,
         temperature=0.0,
     )

@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from neurodiversity import community_accounts, console_log as log
 from neurodiversity import crisis_resources, practical_resources
 from neurodiversity.agents import broadener, citation_checker, general_chat, greeter, reranker, scope_guard, translator, writer
+from neurodiversity.ingestion.embeddings import embed_chunk
 from neurodiversity.query import evidence_grade, live_search, ranking, retrieval
 
 MIN_CANDIDATES_FOR_ANSWER = 1
@@ -208,7 +209,12 @@ def _run_research(raw_input: str, context_summary: str, recent_turns: list[tuple
 
     live_contexts = {}
     for broaden_attempt in range(MAX_BROADEN_ATTEMPTS + 1):
-        candidates = retrieval.retrieve(research_query, match_count=20)
+        # Computed once per iteration, reused for both retrieve() calls below — they run
+        # against the SAME research_query within one iteration (only a new broaden_attempt
+        # changes it), so re-embedding a second time was a real, avoidable extra OpenAI
+        # round-trip on every iteration where live_search fires (the common case).
+        query_embedding = embed_chunk(research_query)
+        candidates = retrieval.retrieve(research_query, match_count=20, query_embedding=query_embedding)
         distinct_papers = {c.paper_id for c in candidates}
         top_similarity = max((c.similarity for c in candidates), default=0.0)
         log.stage("retrieve", f"{len(candidates)} candidates from {len(distinct_papers)} distinct papers (top similarity {top_similarity:.3f})", style="blue")
@@ -229,7 +235,9 @@ def _run_research(raw_input: str, context_summary: str, recent_turns: list[tuple
             live_contexts = live_search.ingest_cheap_for_query(research_query)
             log.sub(f"cheaply ingested {len(live_contexts)} papers (not yet classified/audited)")
             if live_contexts:
-                candidates = retrieval.retrieve(research_query, match_count=20)
+                # Same query_embedding as above — research_query hasn't changed, only the
+                # corpus underneath it has (new papers just got ingested).
+                candidates = retrieval.retrieve(research_query, match_count=20, query_embedding=query_embedding)
                 distinct_papers = {c.paper_id for c in candidates}
                 top_similarity = max((c.similarity for c in candidates), default=0.0)
                 log.stage("retrieve", f"{len(candidates)} candidates from {len(distinct_papers)} distinct papers after live search (top similarity {top_similarity:.3f})", style="blue")

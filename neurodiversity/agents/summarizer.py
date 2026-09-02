@@ -11,7 +11,7 @@ boundary applies to what this agent can see as everywhere else in the system.
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
+from neurodiversity.agents.base import MODEL_NANO, AgentResult, run_agent
 
 PROMPT_VERSION = "v1"
 
@@ -42,6 +42,6 @@ def fold(existing_summary: str, research_query: str, reflection: str) -> AgentRe
         user_message=user_message,
         output_model=SummaryOutput,
         prompt_version=PROMPT_VERSION,
-        model=MODEL_MINI,
+        model=MODEL_NANO,
         temperature=0.0,
     )

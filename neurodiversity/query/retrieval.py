@@ -33,8 +33,14 @@ MAX_CHUNKS_PER_PAPER = 4
 _OVERFETCH_FACTOR = 4
 
 
-def retrieve(research_query: str, match_count: int = 20) -> list[RetrievedChunk]:
-    query_embedding = embed_chunk(research_query)
+def retrieve(research_query: str, match_count: int = 20, query_embedding: list[float] | None = None) -> list[RetrievedChunk]:
+    """query_embedding: pass a precomputed embedding to skip re-embedding — real testing
+    found pipeline.py calling this twice per broaden-loop iteration with the SAME
+    research_query (once before live_search, once after), each recomputing an identical
+    embedding via a full extra OpenAI round-trip. Computed here if not given, so every
+    other caller is unaffected."""
+    if query_embedding is None:
+        query_embedding = embed_chunk(research_query)
     db = get_service_client()
     resp = db.rpc(
         "match_chunks",

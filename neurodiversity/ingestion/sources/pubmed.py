@@ -8,10 +8,9 @@ avoid autism/ADHD crowding out dyspraxia/Tourette's (§16 item 2). Uses NCBI_API
 
 from xml.etree import ElementTree
 
-import httpx
-
 from neurodiversity.config import settings
 from neurodiversity.db.models import Paper
+from neurodiversity.ingestion.sources._shared_http import get_eutils_client
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
@@ -71,7 +70,7 @@ def esearch_free_text(query: str, retmax: int = 8) -> list[str]:
 
 
 def _esearch_term(term: str, retmax: int) -> list[str]:
-    resp = httpx.get(
+    resp = get_eutils_client().get(
         f"{EUTILS_BASE}/esearch.fcgi",
         params={**_params(), "db": "pubmed", "term": term, "retmax": retmax},
         timeout=30.0,
@@ -90,7 +89,7 @@ def efetch(pmids: list[str]) -> list[Paper]:
     """Fetch bibliographic metadata for a batch of PMIDs."""
     if not pmids:
         return []
-    resp = httpx.get(
+    resp = get_eutils_client().get(
         f"{EUTILS_BASE}/efetch.fcgi",
         params={**_params(), "db": "pubmed", "id": ",".join(pmids), "rettype": "abstract"},
         timeout=60.0,

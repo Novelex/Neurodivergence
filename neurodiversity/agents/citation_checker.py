@@ -4,7 +4,7 @@ Two layers, run in order:
   9a. Mechanical check (plain code, no model): every citation's chunk_ids must be in the
       supplied set, and each of its quotes must appear verbatim in its own chunk's text.
       Exact membership/substring tests only.
-  9b. Semantic-fidelity agent (GPT-4o, temp 0): runs only on citations that passed 9a —
+  9b. Semantic-fidelity agent (gpt-4o-mini, temp 0): runs only on citations that passed 9a —
       does the sentence fairly represent the COMBINATION of all its supporting quotes,
       not whether any single quote exists (already answered by 9a).
 
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import run_agent
+from neurodiversity.agents.base import MODEL_MINI, run_agent
 
 PROMPT_VERSION = "v4"
 
@@ -120,6 +120,7 @@ def check_semantic(verified_citations: list) -> list[Flag]:
         user_message=pairs_block,
         output_model=_SemanticCheckOutput,
         prompt_version=PROMPT_VERSION,
+        model=MODEL_MINI,
         temperature=0.0,
     )
     flags = []

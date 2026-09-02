@@ -13,7 +13,7 @@ provider: state the regulatory record as fact, never a conclusion about intent.
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import AgentResult, run_agent
+from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
 
 PROMPT_VERSION = "v3"
 
@@ -133,5 +133,6 @@ def write(
         user_message=user_message,
         output_model=WriterOutput,
         prompt_version=PROMPT_VERSION,
+        model=MODEL_MINI,
         temperature=0.0,
     )

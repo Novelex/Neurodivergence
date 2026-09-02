@@ -16,7 +16,7 @@ same step were already safe to store.
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
+from neurodiversity.agents.base import MODEL_NANO, AgentResult, run_agent
 
 PROMPT_VERSION = "v4"
 
@@ -100,6 +100,6 @@ def translate(raw_input: str, context_summary: str = "", recent_turns: list[tupl
         user_message=user_message,
         output_model=TranslationResult,
         prompt_version=PROMPT_VERSION,
-        model=MODEL_MINI,
+        model=MODEL_NANO,
         temperature=0.0,
     )

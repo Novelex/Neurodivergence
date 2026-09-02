@@ -9,10 +9,9 @@ has_fulltext is trusted, not as a downstream cleanup step (§5.1).
 from dataclasses import dataclass
 from xml.etree import ElementTree
 
-import httpx
-
 from neurodiversity.config import settings
 from neurodiversity.db.models import PaperLicense
+from neurodiversity.ingestion.sources._shared_http import get_eutils_client
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
@@ -99,7 +98,7 @@ def fetch_fulltext(pmc_id: str) -> FullTextResult | None:
     if settings.ncbi_api_key:
         params["api_key"] = settings.ncbi_api_key
 
-    resp = httpx.get(f"{EUTILS_BASE}/efetch.fcgi", params=params, timeout=60.0)
+    resp = get_eutils_client().get(f"{EUTILS_BASE}/efetch.fcgi", params=params, timeout=60.0)
     if resp.status_code != 200 or not resp.text.strip():
         return None
 
