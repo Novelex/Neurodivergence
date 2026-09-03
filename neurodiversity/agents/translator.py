@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
 
-PROMPT_VERSION = "v5"
+PROMPT_VERSION = "v6"
 
 SYSTEM_PROMPT = """Convert this personal message into a researchable query, and write one reflection
 sentence to show the person what you understood.
@@ -31,6 +31,13 @@ become "post-social fatigue and recovery in autistic children", not just "childr
 the new message is already a complete, standalone question, ignore the context and
 translate it as normal — do not let prior topics bleed into an unrelated new question.
 
+Translate what the person actually MEANS, not just the literal words — read colloquial,
+imprecise, or shorthand phrasing the way a person would, using the conversation context to
+fill in what they're actually getting at, rather than translating the surface text alone.
+If the current message plus the recent exchanges make a specific interpretation clearly
+the most likely one — even if the message alone is loosely worded — go with that reading
+directly rather than treating the looseness itself as ambiguity.
+
 First decide: is this message genuinely too ambiguous to form ANY reasonable
 research_query, even using the conversation context above? This means it lacks a
 referent entirely (e.g. "does it work" with no prior context establishing what "it" is),
@@ -38,11 +45,17 @@ not just that it could theoretically be read two ways. If the topic is reasonabl
 inferable — from the message itself or the conversation context — translate it normally;
 do not ask for clarification just because a question is broad or informally phrased.
 
-If it IS genuinely ambiguous: set needs_clarification to true, write a short, direct
-clarifying_question, and give 2-4 concrete clarification_options representing the
-plausible distinct interpretations (e.g. for "does it work", options might be about
-different treatments or conditions the conversation could plausibly mean). Leave
-research_query and reflection empty in this case — do not guess and translate anyway.
+If it IS genuinely ambiguous, first check whether the conversation context still makes one
+reading more likely than the others even though it isn't certain (e.g. the last few
+exchanges were about ADHD medication, and this message could plausibly continue that or
+start something new) — if so, don't ask a blind, generic clarifying question. Instead, set
+needs_clarification to true, and phrase your best-guess reading as the FIRST
+clarification_option, worded so the person can confirm it with one word (e.g. "Still about
+ADHD medication, but from a different angle"), with the other 1-3 options covering the
+other plausible distinct interpretations. Only fall back to a fully generic
+clarifying_question with no leading guess when the context gives no lean at all toward any
+one reading. Leave research_query and reflection empty whenever needs_clarification is
+true — do not guess and translate anyway once you've decided to ask.
 
 If it's NOT ambiguous, leave needs_clarification false and fill in:
 

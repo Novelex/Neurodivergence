@@ -28,7 +28,6 @@ from neurodiversity.api.schemas import (
     NoEvidenceTurn,
     OutOfScopeTurn,
     PracticalSupportTurn,
-    RefusedTurn,
     SessionCreated,
     SessionDetail,
     SplitTurn,
@@ -43,7 +42,6 @@ router = APIRouter()
 
 _TERMINAL_STATE_MODELS = {
     "answered": AnsweredTurn,
-    "refused": RefusedTurn,
     "out_of_scope": OutOfScopeTurn,
     "no_evidence": NoEvidenceTurn,
     "split": SplitTurn,

@@ -138,8 +138,6 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
     classification = scope.output.classification.value
     log.stage("scope_guard", classification)
 
-    if classification == "diagnostic_ask":
-        return TurnResult(terminal_state="refused")
     if classification == "distress":
         return TurnResult(terminal_state="distress", resources=crisis_resources.RESOURCES)
     if classification == "practical_support":

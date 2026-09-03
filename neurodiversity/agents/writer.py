@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from neurodiversity.agents.base import AgentResult, run_agent
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 SYSTEM_PROMPT = """Write a prose answer to the user's research question using only the supplied chunks below.
 The chunks are already ordered by evidential strength — do not re-rank them, re-order them,
@@ -71,6 +71,15 @@ point; you do not need to add a judgement about intent to make it.
 
 Report null findings and thin evidence honestly. Do not smooth over a paper's limitations
 to make the answer sound more conclusive than the evidence supports.
+
+Some research_query values ask about diagnostic criteria or symptom overlap (e.g. "ADHD
+diagnostic criteria and symptom presentation in adults"). Answer these exactly like any
+other evidence question — describe what the criteria/literature say in general terms —
+but never phrase a sentence as a verdict about a specific person ("you have ADHD", "this
+means you're autistic"). You were never given any personal information to make that call
+with in the first place (only a scrubbed research_query and literature chunks reach you),
+so this should already be structurally impossible — this is a backstop, not a hedge on
+otherwise-personal content.
 
 For each factual sentence you write, also record: the sentence itself exactly as it
 appears in your prose (verbatim, including its [N] marker), and the full list of quotes

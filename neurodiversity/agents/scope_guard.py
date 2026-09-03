@@ -1,17 +1,30 @@
 """Agent 5 — Scope guard. See docs/agents.md §5.
 
 Query path, every turn, first step. Fails closed on ambiguity — the tie-break order
-(distress > diagnostic_ask > practical_support > greeting > out_of_domain > answerable) is
-what makes "ambiguous routes to refuse, not to answer" (§7.1) enforceable rather than
-aspirational.
+(distress > practical_support > greeting > out_of_domain > answerable) is what makes
+"ambiguous routes to the more restrictive category, not silently to answerable" (§7.1)
+enforceable rather than aspirational.
+
+There is no diagnostic-refusal category anymore. Earlier this asked the system to refuse
+outright ("do I have ADHD" -> a flat "this system can't diagnose you" message) — dropped
+by explicit instruction: a question about whether symptoms match a condition's criteria is
+just as answerable from the literature as any other evidence question, as long as the
+answer stays a description of what the literature/diagnostic criteria say in general,
+never a personal verdict about the specific person asking ("you have/don't have X"). That
+constraint lives in the translator (which strips the personal narrative before anything
+downstream ever sees it — §7.2) and the writer (which only ever writes from those scrubbed
+chunks, so it structurally has no personal information to diagnose someone WITH) — not in
+a refusal here. "do I have ADHD", "does this sound like autism to you" are answerable.
 
 practical_support exists because a flat out_of_domain boundary message is a dead end for
 a real, non-research need clearly tied to being autistic/ADHD/etc. — workplace rights,
-discrimination, education accommodations, benefits — that this system can't answer from
-the literature but shouldn't just bounce with nothing. Real testing case: "I am autistic
-and need guidance about the law on office harassment" is not researchable, not a
-diagnostic ask, and not distress by itself, but a bare "that's not what I cover" response
-is a worse failure than pointing to real, named organizations that actually handle this.
+discrimination, education accommodations, benefits — that isn't itself a literature
+question but shouldn't just bounce with nothing. Real testing case: "I am autistic and
+need guidance about the law on office harassment" is not researchable and not distress by
+itself, but a bare "that's not what I cover" response is a worse failure than pointing to
+real, named organizations that actually handle this — and pipeline.py runs the SAME
+research pipeline underneath regardless, attaching resources alongside a citation-backed
+answer whenever one exists, never instead of it.
 
 greeting was originally a plain-code keyword match (no model call) — dropped after real
 testing showed it fails on anything not in its exact list ("hy" instead of "hi" fell
@@ -38,33 +51,22 @@ from pydantic import BaseModel
 
 from neurodiversity.agents.base import AgentResult, run_agent
 
-PROMPT_VERSION = "v8"
+PROMPT_VERSION = "v9"
 
 SYSTEM_PROMPT = """Classify this message into exactly one category:
 
 - answerable: a question researchable against the neurodevelopmental research literature
-  (autism, ADHD, dyslexia, dyspraxia, Tourette's, and related conditions), not asking for
-  a personal diagnosis or assessment. A condition the person mentions having is background
-  context here, not a request — e.g. "I have ADHD, is there evidence this £1200 program
-  actually cures it?" is answerable: the person states their diagnosis as a given fact and
-  asks an evidence question about a specific claim, not for an assessment of themselves.
-  This also covers a treatment-decision question that never explicitly says "I have X" —
-  e.g. "if I should treat ADHD for $1000" is answerable, not diagnostic_ask: the question
-  is whether a $1000 treatment is worth it or evidence-backed, not whether the person has
-  ADHD in the first place. Evaluating a treatment, program, or cost is answerable even
-  without an explicit diagnosis disclosure, as long as the question is about the
-  treatment's legitimacy or evidence, not about determining whether the person has the
-  condition.
-- diagnostic_ask: asks this system to assess, diagnose, or predict whether the person (or
-  someone they describe) HAS a condition, or to interpret their personal history/symptoms
-  against diagnostic criteria to reach a conclusion about them — e.g. "do I have ADHD",
-  "does this sound like autism to you", "am I dyslexic based on X". The distinguishing
-  question: is the person asking the system to determine something about THEM (whether
-  they have a condition, what's "wrong" with them), or asking about a treatment, program,
-  or claim's legitimacy? Only the former is diagnostic_ask — asking whether a treatment is
-  worth its cost or backed by evidence is a question about the treatment, not the person,
-  even when phrased in the first person ("should I treat my ADHD" is about the treatment
-  decision, not a request to be diagnosed).
+  (autism, ADHD, dyslexia, dyspraxia, Tourette's, and related conditions). This includes
+  BOTH a question about a treatment, program, or claim's legitimacy ("I have ADHD, is
+  there evidence this £1200 program actually cures it?", "should I treat my ADHD for
+  $1000") AND a question asking whether the person (or someone they describe) might have a
+  condition, or whether their symptoms match diagnostic criteria — "do I have ADHD", "does
+  this sound like autism to you", "am I dyslexic based on X" are ALL answerable too, not a
+  separate refused category. The system never tells someone what they personally are or
+  aren't (that constraint is enforced downstream, in how the answer gets written — not by
+  refusing to look at the question at all): every version of this question gets a real,
+  literature-backed answer describing what the criteria/evidence actually say, framed
+  generally, never as a personal verdict about the specific person asking.
 - distress: requires an AFFIRMATIVE signal of danger to the person — explicit or strongly
   implied self-harm, suicidal ideation, or language stating they cannot go on / cannot
   cope / it's not worth continuing. This is a bright-line, mechanical test, not a
@@ -130,12 +132,12 @@ SYSTEM_PROMPT = """Classify this message into exactly one category:
   reply is the correct response, not a forced categorization.
 
 If the message is ambiguous between categories, prefer the more restrictive one in this
-order: distress > diagnostic_ask > practical_support > greeting > out_of_domain >
-answerable. This does not make a stated diagnosis ambiguous by itself — ambiguity means
-genuine uncertainty about which category fits, not the mere presence of a personal
-disclosure alongside an otherwise clear, researchable question. It also does not make a
-bare unanchored feeling (see above) ambiguous — that's a clean out_of_domain case, not a
-close call to resolve toward practical_support.
+order: distress > practical_support > greeting > out_of_domain > answerable. This does not
+make a stated diagnosis ambiguous by itself — ambiguity means genuine uncertainty about
+which category fits, not the mere presence of a personal disclosure alongside an otherwise
+clear, researchable question. It also does not make a bare unanchored feeling (see above)
+ambiguous — that's a clean out_of_domain case, not a close call to resolve toward
+practical_support.
 
 You may be given prior conversation context — a running summary and/or the last few
 exchanges. Use it to resolve a short follow-up that has no content on its own — e.g. if
@@ -149,7 +151,6 @@ as normal — do not let a prior topic pull an unrelated new message into its ca
 
 class ScopeClassification(str, Enum):
     answerable = "answerable"
-    diagnostic_ask = "diagnostic_ask"
     distress = "distress"
     practical_support = "practical_support"
     greeting = "greeting"

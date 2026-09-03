@@ -129,14 +129,6 @@ class AnsweredTurn(BaseModel):
     evidence: EvidenceSummary
 
 
-class RefusedTurn(BaseModel):
-    terminal_state: Literal["refused"] = "refused"
-    message: str = (
-        "This system answers questions about the published literature — it doesn't "
-        "assess or diagnose. It can't tell you what you are, only what the evidence shows."
-    )
-
-
 class OutOfScopeTurn(BaseModel):
     """§8's original design had this carry only a static boundary message. Now carries a
     real, model-generated conversational reply instead (agents/general_chat.py) — an
@@ -249,7 +241,7 @@ class NeedsClarificationTurn(BaseModel):
 
 TurnResponse = Annotated[
     Union[
-        AnsweredTurn, RefusedTurn, OutOfScopeTurn, NoEvidenceTurn, SplitTurn,
+        AnsweredTurn, OutOfScopeTurn, NoEvidenceTurn, SplitTurn,
         DistressTurn, PracticalSupportTurn, GreetingTurn, NeedsClarificationTurn,
     ],
     Field(discriminator="terminal_state"),
