@@ -4,7 +4,7 @@ Two layers, run in order:
   9a. Mechanical check (plain code, no model): every citation's chunk_ids must be in the
       supplied set, and each of its quotes must appear verbatim in its own chunk's text.
       Exact membership/substring tests only.
-  9b. Semantic-fidelity agent (gpt-4o-mini, temp 0): runs only on citations that passed 9a —
+  9b. Semantic-fidelity agent (gpt-4o, temp 0): runs only on citations that passed 9a —
       does the sentence fairly represent the COMBINATION of all its supporting quotes,
       not whether any single quote exists (already answered by 9a).
 
@@ -17,13 +17,21 @@ and the checker had no way to represent "this sentence legitimately needs both q
 Remediation (either layer): one retry, writer regenerates using only supplied chunks. If
 the retry still has a flagged claim, the turn ends at no_evidence. Capped at one attempt
 — an uncapped retry loop here is the same pattern §2.5 rules out elsewhere.
+
+9b reverted to gpt-4o (from gpt-4o-mini) alongside the writer — real testing on the same
+failure (a "strategies for managing ADHD symptoms" query with genuinely good literature
+available) showed the semantic layer producing a self-contradictory flag: reason text
+reading "No fidelity failure; sentence accurately restates the quote," attached to a
+citation it had just flagged. This is the actual safety net against fabricated or
+overstated claims — not the layer to keep on the model that already failed the mechanical
+check on the same real turn.
 """
 
 from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import MODEL_MINI, run_agent
+from neurodiversity.agents.base import run_agent
 
 PROMPT_VERSION = "v4"
 
@@ -120,7 +128,7 @@ def check_semantic(verified_citations: list) -> list[Flag]:
         user_message=pairs_block,
         output_model=_SemanticCheckOutput,
         prompt_version=PROMPT_VERSION,
-        model=MODEL_MINI,
+        # No model= override — uses run_agent's gpt-4o default. See module docstring.
         temperature=0.0,
     )
     flags = []

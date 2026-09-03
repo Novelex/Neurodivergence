@@ -64,7 +64,11 @@ THIN_SIMILARITY_THRESHOLD = 0.6
 # each time, before actually giving up. Capped, not unbounded — same §2.5 "loop on facts,
 # not judgement" principle as the citation-checker retry: this widens the SEARCH honestly
 # each time, it never lets the writer answer from citations that don't verify.
-MAX_BROADEN_ATTEMPTS = 2
+# Lowered from 2 to 1 for latency, explicitly accepted trade: a worst-case turn now runs
+# one fewer full live-search+retrieve cycle, but a question needing two full widenings to
+# find real coverage will now fall back to no_evidence instead of finding it — this
+# partially undoes the "literature is rarely silent" broadening fix for the sake of speed.
+MAX_BROADEN_ATTEMPTS = 1
 # See its use below (writer_input construction) for the full reasoning — caps the final,
 # fully-ordered chunk list before it reaches the writer, purely for latency.
 MAX_WRITER_CHUNKS = 10

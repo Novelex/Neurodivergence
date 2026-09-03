@@ -20,28 +20,38 @@ T = TypeVar("T", bound=BaseModel)
 
 # Model tiering (real testing found the working spec's original "GPT-4o for everything,
 # no tiering" decision, §11, was a real latency/cost cost worth reopening — §11 already
-# names this trade explicitly).
+# names this trade explicitly). Current state, arrived at through two rounds of real
+# regressions, not guesswork:
 #
-# MODEL_MINI (gpt-4o-mini) is used for every agent in the system, including the writer,
-# citation_checker's semantic check, design_classifier, and every auditor — a deliberate,
-# explicit downgrade from gpt-4o, requested after being flagged: these are the calls
-# where a wrong judgment call either reaches the user directly (writer) or gets stored as
-# permanent data behind an evidence grade (classifier/auditors), and citation_checker is
-# the actual safety net against fabricated or overstated claims. If real answers start
-# showing more citation-checker flags or the writer re-introducing fabricated specifics
-# more often than before this change, that is the tradeoff actually landing — the fix is
-# moving these back to gpt-4o, not tightening prompts further.
+# MODEL_MINI (gpt-4o-mini) is used for the bulk of agents: translator, broadener,
+# greeter, general_chat, summarizer, reranker, design_classifier, and every auditor —
+# well-defined classification/extraction/rewording tasks it has handled reliably in
+# real testing.
 #
-# MODEL_NANO (gpt-5-nano) was tried for the simpler classification/extraction agents
-# (scope_guard, translator, broadener, greeter, general_chat, summarizer, reranker) on
-# the assumption that a cheaper model would also be faster — real, timed testing on the
-# identical call proved the opposite: gpt-5-nano took 9.27s against gpt-4o-mini's 1.95s
-# for the same scope_guard classification, roughly 5x slower despite being ~3x cheaper.
-# It's a reasoning-family model, and reasoning models can cost real wall-clock latency in
-# internal reasoning tokens even when priced lower — cost and speed are NOT the same
-# axis, and optimizing for one blind to the other regressed the thing this project has
-# repeatedly prioritized (speed). Reverted; kept defined here only as a documented
-# warning against re-trying this swap without re-verifying actual latency first.
+# gpt-4o is used, by NOT passing model= (run_agent's default), for three specific
+# agents where real evidence proved gpt-4o-mini unreliable at that exact task:
+#   - scope_guard: reproducibly misclassified plain grief/loss statements ("I lost my
+#     cat") as distress — the system's own highest-risk terminal state — across two
+#     prompt rewrites; gpt-4o got every case right with the identical prompt.
+#   - writer: on a real query with abundant genuine literature ("strategies for managing
+#     ADHD symptoms"), produced quotes that were close paraphrases instead of
+#     byte-for-byte copies, failing the MECHANICAL (plain-code, not judgment) citation
+#     check on 6/6 citations, both the original attempt and the retry — a precision task,
+#     not a judgment task, that the smaller model wasn't reliable at even with good
+#     source material.
+#   - citation_checker's semantic check (9b): on that same real turn, produced a
+#     self-contradictory flag (reason text stated "No fidelity failure" while flagging
+#     the citation anyway) — this is the actual safety net against fabricated or
+#     overstated claims, not a place to accept an unreliable model.
+#
+# MODEL_NANO (gpt-5-nano) was tried for the simpler agents on the assumption a cheaper
+# model would also be faster — real, timed testing on the identical call proved the
+# opposite: gpt-5-nano took 9.27s against gpt-4o-mini's 1.95s for the same scope_guard
+# classification, roughly 5x slower despite being ~3x cheaper. It's a reasoning-family
+# model, and reasoning models can cost real wall-clock latency in internal reasoning
+# tokens even when priced lower — cost and speed are NOT the same axis. Reverted; kept
+# defined here only as a documented warning against re-trying this swap without
+# re-verifying actual latency first.
 MODEL_NANO = "gpt-5-nano"
 MODEL_MINI = "gpt-4o-mini"
 

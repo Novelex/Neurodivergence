@@ -33,10 +33,12 @@ MAX_LIVE_RESULTS = 8
 # fetch (PMC) plus OpenAI call(s), pure sequential I/O wait. Papers are fully independent
 # (separate DB rows keyed by pubmed_id/paper_id, no shared mutable state across
 # iterations), so running them concurrently is safe and changes nothing about the
-# result — same papers, same writes, just not waited on one at a time. Capped, not
-# unbounded, to stay polite to PMC/OpenAI rate limits rather than firing 8 requests at
-# once with no ceiling.
-MAX_CONCURRENT_PAPERS = 4
+# result — same papers, same writes, just not waited on one at a time. Raised from 4 to 8
+# (== MAX_LIVE_RESULTS) so a full live search fetches all candidate papers in one batch
+# instead of two — explicitly accepted, real risk: this is more concurrent load against
+# PubMed/PMC and OpenAI's embedding endpoint per turn, higher chance of hitting a rate
+# limit under real traffic than the more conservative 4 was.
+MAX_CONCURRENT_PAPERS = 8
 
 
 def ingest_cheap_for_query(research_query: str, max_results: int = MAX_LIVE_RESULTS) -> dict[str, IngestResult]:

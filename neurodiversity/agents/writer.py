@@ -9,11 +9,20 @@ mechanical, but the model no longer had that same room to embellish a thin citat
 Produces prose from supplied chunks only; ranking is not its concern. Applies the
 defamation-safe phrasing rule (§7.5) when a chunk names a commercial product or
 provider: state the regulatory record as fact, never a conclusion about intent.
+
+Runs on gpt-4o, not the gpt-4o-mini used for most other agents — reverted after a real,
+reproducible failure: a query on "strategies for managing ADHD symptoms" (a topic with
+abundant genuine literature) returned no_evidence because 6/6 citations failed the
+MECHANICAL check (plain-code exact substring match, not a judgment call) — the model was
+producing quotes that were close paraphrases of the source text, not byte-for-byte
+copies, on both the original attempt and the retry. This is a precision/copying task, not
+a judgment task, and gpt-4o-mini was not reliable enough at it even with real,
+high-quality source material available.
 """
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
+from neurodiversity.agents.base import AgentResult, run_agent
 
 PROMPT_VERSION = "v3"
 
@@ -133,6 +142,6 @@ def write(
         user_message=user_message,
         output_model=WriterOutput,
         prompt_version=PROMPT_VERSION,
-        model=MODEL_MINI,
+        # No model= override — uses run_agent's gpt-4o default. See module docstring.
         temperature=0.0,
     )
