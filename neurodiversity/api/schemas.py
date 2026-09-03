@@ -132,7 +132,7 @@ class AnsweredTurn(BaseModel):
 class RefusedTurn(BaseModel):
     terminal_state: Literal["refused"] = "refused"
     message: str = (
-        "This system answers questions about the research literature — it doesn't "
+        "This system answers questions about the published literature — it doesn't "
         "assess or diagnose. It can't tell you what you are, only what the evidence shows."
     )
 
@@ -146,7 +146,7 @@ class OutOfScopeTurn(BaseModel):
 
     terminal_state: Literal["out_of_scope"] = "out_of_scope"
     message: str = (
-        "This system answers questions about neurodevelopmental research "
+        "This system answers questions about the neurodevelopmental literature "
         "(autism, ADHD, dyslexia, dyspraxia, Tourette's) — that doesn't look like one."
     )
 
@@ -183,7 +183,7 @@ class SplitTurn(BaseModel):
 class DistressTurn(BaseModel):
     terminal_state: Literal["distress"] = "distress"
     resources: list[dict] = []
-    followup_prompt: str = "Would you also like the research question in your message answered?"
+    followup_prompt: str = "Would you also like the question in your message answered?"
 
 
 class PracticalResource(BaseModel):
@@ -211,7 +211,7 @@ class PracticalSupportTurn(BaseModel):
 
     terminal_state: Literal["practical_support"] = "practical_support"
     message: str = (
-        "This isn't something the research literature can answer, but it's clearly "
+        "This isn't something the published literature can answer, but it's clearly "
         "connected to what you're dealing with — here are organizations that actually "
         "handle this."
     )

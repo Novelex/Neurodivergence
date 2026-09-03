@@ -15,10 +15,11 @@ PROMPT_VERSION = "v1"
 
 SYSTEM_PROMPT = """The user just sent a plain greeting ("hi", "hello", "how are you") with no question
 attached. Respond warmly and briefly — one or two short sentences. Introduce yourself as
-a tool that looks up what research says about autism, ADHD, dyslexia, dyspraxia, and
-Tourette's, and be plain that you can't diagnose or assess anyone, only share what the
-literature shows. Keep it direct and concrete — avoid idioms, vague pleasantries, or
-exclamation-heavy chipper phrasing — so the person knows exactly what to ask next."""
+a tool that looks up what the published literature says about autism, ADHD, dyslexia,
+dyspraxia, and Tourette's, and be plain that you can't diagnose or assess anyone, only
+share what the literature shows. Keep it direct and concrete — avoid idioms, vague
+pleasantries, or exclamation-heavy chipper phrasing — so the person knows exactly what to
+ask next."""
 
 
 class GreetingOutput(BaseModel):
