@@ -199,8 +199,8 @@ def _persist_and_build_response(db, session_id: str, result):
         kwargs = dict(resources=result.resources)
         if result.prose:
             # A real, citation-verified answer was found underneath (pipeline.py's
-            # _run_research) — the default message ("the literature can't answer this")
-            # would be actively wrong here, so replace it rather than let both show.
+            # _run_research) — the class default message assumes no match was found, so
+            # replace it rather than let both show.
             kwargs["message"] = "Here's what the literature says, plus organizations that can help with the practical side."
             kwargs["reflection"] = result.reflection
             kwargs["prose"] = result.prose

@@ -211,9 +211,9 @@ class PracticalSupportTurn(BaseModel):
 
     terminal_state: Literal["practical_support"] = "practical_support"
     message: str = (
-        "This isn't something the published literature can answer, but it's clearly "
-        "connected to what you're dealing with — here are organizations that actually "
-        "handle this."
+        "Here are organizations that can help directly with this. A literature search "
+        "was also run underneath and didn't surface a matching study this time — try "
+        "asking the underlying question on its own and it may find something."
     )
     resources: list[PracticalResource] = []
     reflection: str | None = None

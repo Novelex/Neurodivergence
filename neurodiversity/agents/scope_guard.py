@@ -38,7 +38,7 @@ from pydantic import BaseModel
 
 from neurodiversity.agents.base import AgentResult, run_agent
 
-PROMPT_VERSION = "v7"
+PROMPT_VERSION = "v8"
 
 SYSTEM_PROMPT = """Classify this message into exactly one category:
 
@@ -85,29 +85,57 @@ SYSTEM_PROMPT = """Classify this message into exactly one category:
   do not round an ordinary sad statement up to distress "to be safe."
 - practical_support: a real, practical need connected to being autistic/ADHD/dyslexic/
   dyspraxic/having Tourette's that is NOT researchable against the literature and NOT a
-  request for diagnosis — workplace rights or discrimination, harassment, education
-  accommodations, benefits or disability support, and similar life-practical questions.
-  When this fires, also set practical_topic to whichever of these fits best: "workplace",
-  "education", "benefits", or "general" (use "general" only if none of the other three
-  clearly fits). e.g. "I am autistic and need guidance about the law on office harassment"
-  is practical_support with practical_topic "workplace" — not out_of_domain, because it is
-  clearly tied to the person's neurodevelopmental condition even though it isn't a
-  research question, and not answerable, because no literature search answers it.
+  request for diagnosis — workplace rights or discrimination, harassment, bullying or
+  social exclusion, education accommodations, benefits or disability support, and similar
+  life-practical questions where an actual organization or support pathway could plausibly
+  help. An explicit diagnosis disclosure is NOT required to fire this category — this
+  system's entire audience is neurodivergent people, their families, or people supporting
+  them, so a bare, contextless statement naming one of THESE SPECIFIC problem types
+  (bullying/exclusion, workplace conflict/discrimination, school/education difficulty,
+  benefits/disability access) is presumed connected without needing an explicit "I am
+  autistic" first. e.g. "I was bullied" is practical_support with practical_topic "general"
+  (or "education"/"workplace" if the message says where).
+  This does NOT extend to generic sadness, grief, exhaustion, loneliness, or venting with
+  no named problem type of that kind — "I am so sad", "I lost my cat", "I feel awful today"
+  are NOT practical_support (there is no organization or resource that answers a bare
+  emotion), and are NOT distress either absent a danger signal (see distress's own
+  definition) — these fall through to out_of_domain, where a normal, warm conversational
+  reply is the right response, not a resource list. The test is: does the message name a
+  concrete problem category this system actually has a support pathway for? If yes,
+  practical_support. If it's just an unanchored feeling with nothing to act on, it isn't.
+  When practical_support fires, also set practical_topic to whichever of these fits best:
+  "workplace", "education", "benefits", or "general" (use "general" only if none of the
+  other three clearly fits, e.g. bullying/exclusion with no stated setting).
 - greeting: the ENTIRE message is just a greeting or pleasantry with no other content —
   "hi", "hello", typos/variants of these ("hy", "helo"), "how are you", "thanks", "bye" —
   and nothing else is being asked. A greeting attached to a real question is NOT this
-  category — "hi, what does research say about X" is answerable, not greeting, because
-  there's a real question to answer. Only classify as greeting when there is nothing else
-  to respond to.
-- out_of_domain: not related to neurodevelopmental conditions at all — not the research,
-  and not a practical need connected to having one either — and not just a greeting either.
+  category — "hi, what does the literature say about X" is answerable, not greeting,
+  because there's a real question to answer. Only classify as greeting when there is
+  nothing else to respond to.
+- out_of_domain: recipes, weather, sports scores, tech support, trivia, general hobbies,
+  and similar topics with no human-development, behavioral, social, or life-difficulty
+  angle at all — AND also generic, unanchored feelings or venting with no named problem
+  this system could act on ("I am so sad", "I lost my cat", "I feel awful today"; see
+  practical_support's own definition for that boundary and why). This is a narrow bucket
+  in the sense that it must not be used to dodge a genuinely researchable or practical
+  question just because it lacks an explicit diagnosis label — a message naming a real,
+  concrete problem this system covers (bullying, workplace/education difficulty,
+  discrimination, benefits access, or a real evidence question) is NOT out_of_domain
+  merely for omitting "I am autistic/ADHD/etc." (route it to practical_support or
+  answerable instead, whichever fits). A vague statement with truly no topic at all ("does
+  it work" with nothing to anchor it) belongs to answerable, not out_of_domain, so the
+  next step can ask a clarifying question. But a message with no named topic AND no
+  concrete problem at all — just an unanchored emotion — is genuinely out_of_domain: there
+  is nothing to research and nothing to point a resource at, so a plain conversational
+  reply is the correct response, not a forced categorization.
 
 If the message is ambiguous between categories, prefer the more restrictive one in this
 order: distress > diagnostic_ask > practical_support > greeting > out_of_domain >
-answerable. Never resolve ambiguity by choosing answerable. This does not make a stated
-diagnosis ambiguous by itself — ambiguity means genuine uncertainty about which category
-fits, not the mere presence of a personal disclosure alongside an otherwise clear,
-researchable question.
+answerable. This does not make a stated diagnosis ambiguous by itself — ambiguity means
+genuine uncertainty about which category fits, not the mere presence of a personal
+disclosure alongside an otherwise clear, researchable question. It also does not make a
+bare unanchored feeling (see above) ambiguous — that's a clean out_of_domain case, not a
+close call to resolve toward practical_support.
 
 You may be given prior conversation context — a running summary and/or the last few
 exchanges. Use it to resolve a short follow-up that has no content on its own — e.g. if
