@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
 
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v5"
 
 SYSTEM_PROMPT = """Convert this personal message into a researchable query, and write one reflection
 sentence to show the person what you understood.
@@ -77,10 +77,39 @@ class TranslationResult(BaseModel):
     reflection: str = ""
 
 
-def translate(raw_input: str, context_summary: str = "", recent_turns: list[tuple[str, str]] | None = None) -> AgentResult:
+FORCE_TRANSLATE_ADDENDUM = """
+
+Override for this call: this message already passed a separate check confirming it's a
+real, practical need connected to being autistic, ADHD, dyslexic, dyspraxic, or having
+Tourette's (topic area: {topic}) — even though the message itself may not name the
+condition. Do NOT set needs_clarification for this call under any circumstance: always
+produce a concrete research_query, grounding it in that population and topic area as the
+assumed referent when the message alone doesn't specify one (e.g. "how should I behave at
+work" with topic "workplace" becomes something like "workplace social/behavioral
+expectations and challenges for autistic and ADHD adults", not a request for
+clarification). Pick the single most reasonable reading rather than asking which one was
+meant — this path never dead-ends without attempting a real literature search first."""
+
+
+def translate(
+    raw_input: str,
+    context_summary: str = "",
+    recent_turns: list[tuple[str, str]] | None = None,
+    force_topic: str | None = None,
+) -> AgentResult:
     """context_summary: running summary of turns older than the exact window (empty if
     none yet). recent_turns: (research_query, reflection) pairs for the last few turns,
-    oldest first — both always already-scrubbed text, never raw_input."""
+    oldest first — both always already-scrubbed text, never raw_input.
+
+    force_topic: set only by pipeline.py's practical_support path (the topic scope_guard
+    already assigned, e.g. "workplace") — forces this call to always produce a
+    research_query instead of ever bailing to needs_clarification, since practical_support
+    has already established the message is connected to the domain; the only question left
+    is what to search for, not whether to search at all."""
+    system_prompt = SYSTEM_PROMPT
+    if force_topic:
+        system_prompt = SYSTEM_PROMPT + FORCE_TRANSLATE_ADDENDUM.format(topic=force_topic)
+
     user_message = raw_input
     if context_summary or recent_turns:
         context_block = ""
@@ -96,7 +125,7 @@ def translate(raw_input: str, context_summary: str = "", recent_turns: list[tupl
         user_message = f"{context_block}New message: {raw_input}"
 
     return run_agent(
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         user_message=user_message,
         output_model=TranslationResult,
         prompt_version=PROMPT_VERSION,

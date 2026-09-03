@@ -197,10 +197,14 @@ def _persist_and_build_response(db, session_id: str, result):
         return model(reflection=result.reflection)
     if result.terminal_state == "practical_support":
         kwargs = dict(resources=result.resources)
+        if result.message:
+            # pipeline.py sets this explicitly based on what actually happened underneath
+            # (a real search ran and found nothing vs. the question was too vague to
+            # search at all) — always more accurate than the schema's generic default.
+            kwargs["message"] = result.message
         if result.prose:
             # A real, citation-verified answer was found underneath (pipeline.py's
-            # _run_research) — the class default message assumes no match was found, so
-            # replace it rather than let both show.
+            # _run_research) — overrides the no-match message above.
             kwargs["message"] = "Here's what the literature says, plus organizations that can help with the practical side."
             kwargs["reflection"] = result.reflection
             kwargs["prose"] = result.prose

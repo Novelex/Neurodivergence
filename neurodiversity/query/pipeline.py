@@ -104,6 +104,7 @@ class TurnResult:
     resources: list = field(default_factory=list)  # practical_support only — static table, never model output
     community_corroboration: dict | None = None  # no_evidence only — static table, never model output (§9.1)
     clarification_options: list = field(default_factory=list)  # needs_clarification only
+    message: str | None = None  # practical_support only — overrides the schema default, see below
     debug: dict = field(default_factory=dict)
 
 
@@ -154,8 +155,15 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
         # underneath (matching §9.2's distress pattern: safety/practical content shown
         # unconditionally, the research angle attempted alongside it, never assumed away)
         # and attach whatever literature-backed answer it finds alongside the resources.
+        # force_topic makes _run_research's translator step always produce a research_query
+        # instead of ever bailing to needs_clarification — scope_guard already established
+        # this message is connected to the domain (that's how it got here), so the only
+        # open question is what to search for, not whether to search at all. Every
+        # practical_support question goes through the exact same research pipeline as an
+        # "answerable" one, no exceptions: there's no such thing as "too vague to search"
+        # once the topic area is known, since the topic itself grounds the query.
         log.stage("practical_support", "also attempting research pipeline", style="cyan")
-        research_result = _run_research(raw_input, context_summary, recent_turns)
+        research_result = _run_research(raw_input, context_summary, recent_turns, force_topic=topic or "general")
         if research_result.terminal_state == "answered":
             return TurnResult(
                 terminal_state="practical_support",
@@ -166,7 +174,17 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
                 resources=resources,
                 debug=research_result.debug,
             )
-        return TurnResult(terminal_state="practical_support", resources=resources)
+        # A real search DID run (force_topic rules out needs_clarification here) and came
+        # up empty after broadening — say so honestly, never that the literature "can't"
+        # answer this outright, since that's a claim about this one search, not a
+        # permanent verdict on the whole literature.
+        message = (
+            "Here are organizations that can help directly with this. A literature "
+            "search was also run underneath and didn't surface a matching study "
+            "this time — try asking the underlying question on its own and it may "
+            "find something."
+        )
+        return TurnResult(terminal_state="practical_support", resources=resources, message=message)
     if classification == "greeting":
         reply = greeter.greet()
         return TurnResult(terminal_state="greeting", prose=reply.output.message)
@@ -181,12 +199,21 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
     return _run_research(raw_input, context_summary, recent_turns)
 
 
-def _run_research(raw_input: str, context_summary: str, recent_turns: list[tuple[str, str]]) -> TurnResult:
+def _run_research(
+    raw_input: str,
+    context_summary: str,
+    recent_turns: list[tuple[str, str]],
+    force_topic: str | None = None,
+) -> TurnResult:
     """The full translator -> retrieve -> live_search -> broaden -> rerank -> rank ->
     writer -> citation_checker chain. Called for "answerable" classifications directly,
     and ALSO for "practical_support" ones (see above) so a practical need connected to a
-    condition still gets checked against the literature, not routed past it."""
-    trans = translator.translate(raw_input, context_summary, recent_turns)
+    condition still gets checked against the literature, not routed past it.
+
+    force_topic: only set by the practical_support caller — forwarded to
+    translator.translate so it never bails to needs_clarification on this path (see the
+    call site's comment)."""
+    trans = translator.translate(raw_input, context_summary, recent_turns, force_topic=force_topic)
     if trans.output.needs_clarification:
         log.stage("translator", "needs_clarification", style="cyan")
         return TurnResult(
