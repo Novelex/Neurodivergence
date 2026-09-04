@@ -1,0 +1,292 @@
+{
+  "runs": [
+    {
+      "query": "hi",
+      "expected": "greeting",
+      "actual_terminal_state": "greeting",
+      "wall_clock_seconds": 7.24,
+      "stage_breakdown": [
+        {
+          "name": "scope_guard",
+          "since_last_seconds": 5.74,
+          "since_start_seconds": 5.74
+        },
+        {
+          "name": "(response)",
+          "since_last_seconds": 1.46,
+          "since_start_seconds": 7.2
+        }
+      ]
+    },
+    {
+      "query": "what's a good pizza recipe",
+      "expected": "out_of_scope",
+      "actual_terminal_state": "out_of_scope",
+      "wall_clock_seconds": 5.52,
+      "stage_breakdown": [
+        {
+          "name": "scope_guard",
+          "since_last_seconds": 1.1,
+          "since_start_seconds": 1.1
+        },
+        {
+          "name": "(response)",
+          "since_last_seconds": 4.42,
+          "since_start_seconds": 5.51
+        }
+      ]
+    },
+    {
+      "query": "does it work",
+      "expected": "needs_clarification",
+      "actual_terminal_state": "out_of_scope",
+      "wall_clock_seconds": 6.26,
+      "stage_breakdown": [
+        {
+          "name": "scope_guard",
+          "since_last_seconds": 5.35,
+          "since_start_seconds": 5.35
+        },
+        {
+          "name": "(response)",
+          "since_last_seconds": 0.9,
+          "since_start_seconds": 6.24
+        }
+      ]
+    },
+    {
+      "query": "i am autistic and got bullied at work",
+      "expected": "practical_support",
+      "actual_terminal_state": "practical_support",
+      "wall_clock_seconds": 34.74,
+      "stage_breakdown": [
+        {
+          "name": "scope_guard",
+          "since_last_seconds": 2.28,
+          "since_start_seconds": 2.28
+        },
+        {
+          "name": "practical_support",
+          "since_last_seconds": 0.02,
+          "since_start_seconds": 2.3
+        },
+        {
+          "name": "translator",
+          "since_last_seconds": 2.48,
+          "since_start_seconds": 4.78
+        },
+        {
+          "name": "retrieve",
+          "since_last_seconds": 7.6,
+          "since_start_seconds": 12.38
+        },
+        {
+          "name": "live_search",
+          "since_last_seconds": 0.03,
+          "since_start_seconds": 12.41
+        },
+        {
+          "name": "broaden",
+          "since_last_seconds": 6.5,
+          "since_start_seconds": 18.91
+        },
+        {
+          "name": "retrieve",
+          "since_last_seconds": 2.18,
+          "since_start_seconds": 21.09
+        },
+        {
+          "name": "live_search",
+          "since_last_seconds": 0.01,
+          "since_start_seconds": 21.1
+        },
+        {
+          "name": "rerank",
+          "since_last_seconds": 4.93,
+          "since_start_seconds": 26.03
+        },
+        {
+          "name": "rank",
+          "since_last_seconds": 0.01,
+          "since_start_seconds": 26.04
+        },
+        {
+          "name": "writer",
+          "since_last_seconds": 7.15,
+          "since_start_seconds": 33.18
+        },
+        {
+          "name": "citation_checker",
+          "since_last_seconds": 1.0,
+          "since_start_seconds": 34.18
+        },
+        {
+          "name": "(response)",
+          "since_last_seconds": 0.54,
+          "since_start_seconds": 34.72
+        }
+      ]
+    },
+    {
+      "query": "do I have ADHD",
+      "expected": "answerable_or_clarification",
+      "actual_terminal_state": "needs_clarification",
+      "wall_clock_seconds": 2.12,
+      "stage_breakdown": [
+        {
+          "name": "scope_guard",
+          "since_last_seconds": 0.99,
+          "since_start_seconds": 0.99
+        },
+        {
+          "name": "translator",
+          "since_last_seconds": 1.1,
+          "since_start_seconds": 2.1
+        },
+        {
+          "name": "(response)",
+          "since_last_seconds": 0.02,
+          "since_start_seconds": 2.11
+        }
+      ]
+    },
+    {
+      "query": "what causes ADHD",
+      "expected": "answerable",
+      "actual_terminal_state": "answered",
+      "wall_clock_seconds": 21.37,
+      "stage_breakdown": [
+        {
+          "name": "scope_guard",
+          "since_last_seconds": 0.93,
+          "since_start_seconds": 0.93
+        },
+        {
+          "name": "translator",
+          "since_last_seconds": 1.01,
+          "since_start_seconds": 1.95
+        },
+        {
+          "name": "retrieve",
+          "since_last_seconds": 1.08,
+          "since_start_seconds": 3.03
+        },
+        {
+          "name": "rerank",
+          "since_last_seconds": 2.96,
+          "since_start_seconds": 5.99
+        },
+        {
+          "name": "rank",
+          "since_last_seconds": 0.0,
+          "since_start_seconds": 5.99
+        },
+        {
+          "name": "writer",
+          "since_last_seconds": 14.02,
+          "since_start_seconds": 20.01
+        },
+        {
+          "name": "citation_checker",
+          "since_last_seconds": 0.87,
+          "since_start_seconds": 20.88
+        },
+        {
+          "name": "(response)",
+          "since_last_seconds": 0.48,
+          "since_start_seconds": 21.36
+        }
+      ]
+    },
+    {
+      "query": "effectiveness of a rare, narrow intervention for Tourette's tics in adults",
+      "expected": "answerable_live_search",
+      "actual_terminal_state": "answered",
+      "wall_clock_seconds": 19.1,
+      "stage_breakdown": [
+        {
+          "name": "scope_guard",
+          "since_last_seconds": 1.38,
+          "since_start_seconds": 1.38
+        },
+        {
+          "name": "translator",
+          "since_last_seconds": 1.08,
+          "since_start_seconds": 2.46
+        },
+        {
+          "name": "retrieve",
+          "since_last_seconds": 1.01,
+          "since_start_seconds": 3.47
+        },
+        {
+          "name": "rerank",
+          "since_last_seconds": 3.53,
+          "since_start_seconds": 7.0
+        },
+        {
+          "name": "rank",
+          "since_last_seconds": 0.0,
+          "since_start_seconds": 7.0
+        },
+        {
+          "name": "writer",
+          "since_last_seconds": 10.75,
+          "since_start_seconds": 17.76
+        },
+        {
+          "name": "citation_checker",
+          "since_last_seconds": 1.0,
+          "since_start_seconds": 18.76
+        },
+        {
+          "name": "(response)",
+          "since_last_seconds": 0.33,
+          "since_start_seconds": 19.09
+        }
+      ]
+    }
+  ],
+  "summary_by_terminal_state": {
+    "greeting": {
+      "n": 1,
+      "mean": 7.24,
+      "p50": 7.24,
+      "p95": 7.24,
+      "min": 7.24,
+      "max": 7.24
+    },
+    "out_of_scope": {
+      "n": 2,
+      "mean": 5.89,
+      "p50": 5.89,
+      "p95": 6.26,
+      "min": 5.52,
+      "max": 6.26
+    },
+    "practical_support": {
+      "n": 1,
+      "mean": 34.74,
+      "p50": 34.74,
+      "p95": 34.74,
+      "min": 34.74,
+      "max": 34.74
+    },
+    "needs_clarification": {
+      "n": 1,
+      "mean": 2.12,
+      "p50": 2.12,
+      "p95": 2.12,
+      "min": 2.12,
+      "max": 2.12
+    },
+    "answered": {
+      "n": 2,
+      "mean": 20.23,
+      "p50": 20.23,
+      "p95": 21.37,
+      "min": 19.1,
+      "max": 21.37
+    }
+  }
+}
