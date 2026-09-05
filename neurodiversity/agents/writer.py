@@ -20,23 +20,27 @@ a judgment task, and gpt-4o-mini was not reliable enough at it even with real,
 high-quality source material available.
 """
 
+from typing import Callable
+
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import AgentResult, run_agent
+from neurodiversity.agents.base import AgentResult, run_agent, run_agent_stream
+from neurodiversity.agents.language_rules import LANGUAGE_RULES, LANGUAGE_RULES_VERSION
 
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = f"v7-lang{LANGUAGE_RULES_VERSION}"  # v7 = no invented numbers; keep qualitative-study framing
 
-SYSTEM_PROMPT = """Write a prose answer to the user's research question using only the supplied chunks below.
-The chunks are already ordered by evidential strength — do not re-rank them, re-order them,
-or second-guess their order; that judgement has already been made upstream.
+SYSTEM_PROMPT_BASE = """Answer the user's research question using only the supplied chunks below, composed
+directly as an ordered list of cited sentences — not as a separate paragraph you write first and then
+break apart. The chunks are already ordered by evidential strength — do not re-rank them, re-order
+them, or second-guess their order; that judgement has already been made upstream.
 
 Every factual claim in your answer must trace to specific supplied chunks. Do not
 introduce information, studies, or figures not present in the supplied material.
 
-Cite inline as you write: after each factual sentence, insert a bracketed number like
-[1], [2] matching that sentence's position in the citations list you output. Number
-citations in the order they first appear in the prose, starting at 1. A reader should be
-able to see which specific claim each citation backs without leaving the paragraph.
+Each citations entry is one sentence of the final answer. Set citation_number to the order
+these sentences should be read in, starting at 1 — the reader-facing bracket number is
+added separately from this field, so do not write "[1]" or any bracket into the sentence
+text itself, just the plain sentence.
 
 This system routinely answers by synthesizing several papers. A sentence that genuinely
 draws on more than one supplied chunk is fine and expected — cite ALL of the quotes it
@@ -61,6 +65,16 @@ actually draws on:
   "potential", "one small trial", "did not reach significance"), your sentence must keep
   that same hedge — do not upgrade a tentative or proposed finding into a stated fact, and
   do not drop a quote's stated caveat or contradictory follow-up when summarizing it.
+- Never state a number, percentage, or fraction ("almost half", "70%", "one in three")
+  that is not the quote's own figure, verbatim. A plausible-sounding number you recall
+  from training is not a citable fact — if the quote doesn't contain that number, the
+  sentence doesn't either.
+- If a quote describes what STUDY PARTICIPANTS said, did, or reported (qualitative
+  research — "participants described...", "interviewees noted..."), keep that framing.
+  Do not generalize it into an unqualified claim about the broader population ("autistic
+  adults often report...", "people with ADHD tend to...") — what a study's participants
+  said is evidence about them, not yet a general population claim, and stripping the
+  qualifier is exactly the kind of overstatement citation-checking exists to catch.
 
 If the supplied chunks discuss a specific named commercial product, clinic, or provider,
 state the regulatory record and evidence status as fact (e.g., "a 510(k) clearance
@@ -81,11 +95,9 @@ with in the first place (only a scrubbed research_query and literature chunks re
 so this should already be structurally impossible — this is a backstop, not a hedge on
 otherwise-personal content.
 
-For each factual sentence you write, also record: the sentence itself exactly as it
-appears in your prose (verbatim, including its [N] marker), and the full list of quotes
-(each with its chunk_id and paper_id) that together support it — one quote if the claim
-comes from one source, more than one if it genuinely synthesizes several. The
-citation_number must match the [N] marker you placed inline in the prose for that claim.
+For each sentence, also record the full list of quotes (each with its chunk_id and
+paper_id) that together support it — one quote if the claim comes from one source, more
+than one if it genuinely synthesizes several.
 
 Also write one short, separate opening sentence — plain and direct, not a factual claim,
 no citation needed or wanted. It briefly acknowledges the person's question before the
@@ -94,6 +106,8 @@ into."). Keep it short, concrete, and non-generic to what was actually asked —
 pleasantries, exclamation marks, or chipper filler ("Great question!"). Do not restate the
 question itself (that's already shown separately) and do not preview what the evidence
 will say — it is a brief acknowledgment, not a summary."""
+
+SYSTEM_PROMPT = f"{SYSTEM_PROMPT_BASE}\n{LANGUAGE_RULES}"
 
 
 class QuoteRef(BaseModel):
@@ -109,48 +123,54 @@ class Citation(BaseModel):
 
 
 class WriterOutput(BaseModel):
+    """No separate `prose` field — a prior version had the model write the whole answer
+    as one flowing paragraph AND repeat it broken into citations, and only the citations
+    ever reached the screen (pipeline.py's _render_prose rebuilds the displayed text
+    purely from citations[].sentence — see its own docstring for why). The paragraph was
+    pure wasted generation: the model wrote the full answer twice, and only field
+    declaration order determines structured-output generation order, so it also fully
+    blocked citations (and any streaming preview of them) from starting until an unused
+    field finished. Field order matters here: opening first (it's what a live preview
+    shows immediately), then citations."""
+
     opening: str
-    prose: str
     citations: list[Citation]
 
 
 def write(
     research_query: str,
     ranked_chunks: list[dict],
-    previous_flags: list[tuple[str, str, str]] | None = None,
+    on_partial: Callable[[dict], None] | None = None,
 ) -> AgentResult:
     """ranked_chunks: list of {"chunk_id", "paper_id", "text"}, already in rank order.
 
-    previous_flags: (sentence, quotes_joined, reason) triples from a prior citation-check
-    failure, working spec §7.6's "the writer is told which specific claim was
-    unsupported and regenerates" — the retry must actually convey what was wrong, not
-    just re-roll the same call at temperature 0.2 and hope.
-    """
+    on_partial: forwarded as-is to run_agent_stream: a raw partial dict, not a validated
+    WriterOutput, and never itself checked or final — see that function's docstring. The
+    final AgentResult returned here is identical either way.
+
+    No retry-with-feedback path anymore — pipeline.py's citation_checker step now salvages
+    (drops a flagged citation, keeps the rest) on the first and only attempt rather than
+    regenerating with the flags as feedback. That regeneration-and-recheck cycle cost
+    ~8-12s whenever it fired (a full second call to this function plus a full second
+    citation_checker pass) — the biggest discretionary latency cost left once live search
+    stopped double-firing. Real, deliberate tradeoff: some answers now carry fewer
+    citations than a successful retry would have kept, in exchange for a hard ceiling on
+    total turn time. See pipeline.py's _search_and_write for where this is decided."""
     chunks_block = "\n\n".join(
         f"chunk_id: {c['chunk_id']}\npaper_id: {c['paper_id']}\ntext: {c['text']}"
         for c in ranked_chunks
     )
     user_message = f"Research question: {research_query}\n\nSupplied chunks:\n\n{chunks_block}"
 
-    if previous_flags:
-        flags_block = "\n".join(
-            f'- Your sentence: "{sentence}"\n  Cited quote(s): "{quotes}"\n  Problem: {reason}'
-            for sentence, quotes, reason in previous_flags
-        )
-        user_message = (
-            f"{user_message}\n\n"
-            "Your previous draft had these specific sentences flagged as unsupported or "
-            "misrepresenting their cited source. Fix each one — either add the additional "
-            "quote(s) the claim actually needs, correct the claim to match what the cited "
-            "quotes say, or remove the claim entirely if nothing supplied backs it:\n\n"
-            f"{flags_block}"
-        )
-
-    return run_agent(
+    run = run_agent_stream if on_partial is not None else run_agent
+    kwargs = {"on_partial": on_partial} if on_partial is not None else {}
+    return run(
         system_prompt=SYSTEM_PROMPT,
         user_message=user_message,
         output_model=WriterOutput,
         prompt_version=PROMPT_VERSION,
-        # No model= override — uses run_agent's gpt-4o default. See module docstring.
+        # No model= override — uses run_agent's/run_agent_stream's gpt-4o default. See
+        # module docstring.
         temperature=0.0,
+        **kwargs,
     )

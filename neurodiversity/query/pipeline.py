@@ -21,9 +21,14 @@ surfaces claims with divergent measure_ids, and claim extraction (agent 3) was n
 in this small-scale proof, so the claims table is empty and the check has nothing to
 trigger on. That's an honest gap for this scope, not a bug.
 
-Distress path (§9.2) is not implemented here either — scope guard classifies it
-correctly, but the resource-table/follow-up-prompt response is real safety-content work
-that deserves its own pass, not a stub bolted onto this proof.
+Distress path (§9.2): agents/danger.py runs concurrently with scope_guard on every turn
+(not a scope_guard category) and wins unconditionally over whatever scope_guard says —
+static crisis resources (crisis_resources.py) plus a followup_prompt tailored to whether
+the danger is to the person themselves or someone they're worried about. No lexical fast-
+path (Layer 0) — see danger.py's own docstring for why that's a deliberate gap, not an
+oversight. No session-level escalation/decay across turns and no dedicated retention
+policy for a distress turn's raw_input beyond the standard purge schedule — both real,
+open pieces of safety-content work, not silently assumed solved by what's here.
 """
 
 import re
@@ -33,7 +38,8 @@ from dataclasses import dataclass, field
 
 from neurodiversity import community_accounts, console_log as log
 from neurodiversity import crisis_resources, practical_resources
-from neurodiversity.agents import broadener, citation_checker, general_chat, greeter, reranker, scope_guard, translator, writer
+from neurodiversity.agents import broadener, citation_checker, danger, general_chat, greeter, reranker, router, scope_guard, translator, writer
+from neurodiversity.config import settings
 from neurodiversity.ingestion.embeddings import embed_chunk
 from neurodiversity.query import evidence_grade, live_search, ranking, retrieval
 
@@ -73,27 +79,6 @@ MAX_BROADEN_ATTEMPTS = 1
 # fully-ordered chunk list before it reaches the writer, purely for latency.
 MAX_WRITER_CHUNKS = 10
 
-# Deliberately narrow — exact matches only (after trim/lowercase/punctuation-strip), not
-# a general keyword classifier. A previous version of this idea tried to cover greetings
-# broadly and missed "hy" (a typo of "hi"), which then fell through to out_of_domain's
-# cold boundary message — that's why detection normally lives in scope_guard.classify()'s
-# full model call instead. This set exists ONLY to shortcut the single most common,
-# completely unambiguous case (a bare "hi"/"hey"/etc, nothing else in the message) so
-# THAT case doesn't pay for two full LLM calls when one is enough. Anything not an exact
-# match — including typos, or a greeting with a real question attached — still goes
-# through the full scope_guard classification, unchanged.
-_UNAMBIGUOUS_GREETINGS = {
-    "hi", "hey", "hello", "hiya", "yo",
-    "good morning", "good afternoon", "good evening",
-    "how are you", "how are you doing",
-    "thanks", "thank you", "bye", "goodbye",
-}
-
-
-def _is_unambiguous_greeting(raw_input: str) -> bool:
-    return raw_input.strip().lower().rstrip("!.?,") in _UNAMBIGUOUS_GREETINGS
-
-
 @dataclass
 class TurnResult:
     terminal_state: str
@@ -104,7 +89,8 @@ class TurnResult:
     resources: list = field(default_factory=list)  # practical_support only — static table, never model output
     community_corroboration: dict | None = None  # no_evidence only — static table, never model output (§9.1)
     clarification_options: list = field(default_factory=list)  # needs_clarification only
-    message: str | None = None  # practical_support only — overrides the schema default, see below
+    message: str | None = None  # practical_support: overrides the schema default (see below).
+    # distress: the tailored followup_prompt text (differs for third_party_concern).
     debug: dict = field(default_factory=dict)
 
 
@@ -122,26 +108,60 @@ def handle_turn(raw_input: str, context_summary: str = "", recent_turns: list[tu
 
 
 def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[str, str]]) -> TurnResult:
-    if _is_unambiguous_greeting(raw_input):
-        # Fast path, exact-match only — real testing found a bare "Hey" costing two full
-        # sequential LLM round trips (scope_guard just to classify it as a greeting, then
-        # greeter to generate the reply) after greeting detection was folded into
-        # scope_guard's classification to fix a typo bug ("hy" wasn't in a keyword list).
-        # This skips scope_guard ONLY for an exact, unambiguous match — anything not in
-        # this small set, typos included, still goes through the full smart
-        # classification below exactly as before, so that fix isn't undone.
-        log.stage("greeting", "exact match — skipping scope_guard", style="cyan")
-        reply = greeter.greet()
-        return TurnResult(terminal_state="greeting", prose=reply.output.message)
+    # No text-match shortcut here on purpose — a keyword/exact-match fast path previously
+    # lived here and was removed: greeting is a judgment call ("hy" vs "hydroxyzine dosing",
+    # a greeting with a real question attached vs one without), and a plain-code match can
+    # only ever approximate that. scope_guard's model call is the one place that judgment
+    # is actually made, for every message, no exceptions carved out for speed.
+    #
+    # danger.py runs CONCURRENTLY with scope_guard, not after it — they're independent
+    # questions ("is this dangerous" vs "what kind of message is this otherwise") that used
+    # to be forced into one five-way classification, which was the actual root cause of a
+    # real, documented bug (see danger.py's module docstring). Running them concurrently
+    # means this costs no extra wall-clock time on the common case versus the old single
+    # call, and a danger signal always wins regardless of what scope_guard says — nothing
+    # downstream of danger.py's "none" needs it to be correct, but everything downstream of
+    # a real signal needs it to never be skipped.
+    # settings.use_router_agent (default False): route through the merged scope_guard+
+    # translator+broadener agent instead — see agents/router.py's module docstring. Clean,
+    # instant rollback: it's a config flag, not a code branch to revert.
+    router_output = None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        danger_future = pool.submit(danger.check, raw_input, context_summary, recent_turns)
+        if settings.use_router_agent:
+            classify_future = pool.submit(router.route, raw_input, context_summary, recent_turns)
+        else:
+            classify_future = pool.submit(scope_guard.classify, raw_input, context_summary, recent_turns)
+        danger_result = danger_future.result()
+        classify_result = classify_future.result()
 
-    scope = scope_guard.classify(raw_input, context_summary, recent_turns)
-    classification = scope.output.classification.value
-    log.stage("scope_guard", classification)
+    signal = danger_result.output.signal.value
+    log.stage("danger", signal, style="magenta" if signal != "none" else "dim")
+    classification = classify_result.output.classification.value
+    practical_topic_enum = classify_result.output.practical_topic
+    if settings.use_router_agent:
+        router_output = classify_result.output
+        log.stage("router", classification)
+    else:
+        scope = classify_result
+        log.stage("scope_guard", classification)
 
-    if classification == "distress":
-        return TurnResult(terminal_state="distress", resources=crisis_resources.RESOURCES)
+    if signal != "none":
+        if signal == "third_party_concern":
+            followup = (
+                "Would you like guidance on how to support them, or help with anything "
+                "else in your message?"
+            )
+        else:
+            followup = "Would you also like the question in your message answered?"
+        return TurnResult(
+            terminal_state="distress",
+            resources=crisis_resources.RESOURCES,
+            message=followup,
+            debug={"danger_signal": signal},
+        )
     if classification == "practical_support":
-        topic = scope.output.practical_topic.value if scope.output.practical_topic else None
+        topic = practical_topic_enum.value if practical_topic_enum else None
         log.sub(f"practical_topic={topic!r}")
         resources = practical_resources.for_topic(topic)
         # A practical need connected to a condition is NOT mutually exclusive with a real
@@ -161,7 +181,14 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
         # "answerable" one, no exceptions: there's no such thing as "too vague to search"
         # once the topic area is known, since the topic itself grounds the query.
         log.stage("practical_support", "also attempting research pipeline", style="cyan")
-        research_result = _run_research(raw_input, context_summary, recent_turns, force_topic=topic or "general")
+        if settings.use_router_agent:
+            # The router already produced a research_query grounded in this topic in the
+            # same call that classified it (its own prompt forbids needs_clarification for
+            # practical_support) — no force_topic re-call needed, unlike the scope_guard
+            # path below.
+            research_result = _run_research_router(router_output)
+        else:
+            research_result = _run_research(raw_input, context_summary, recent_turns, force_topic=topic or "general")
         if research_result.terminal_state == "answered":
             return TurnResult(
                 terminal_state="practical_support",
@@ -194,6 +221,9 @@ def _handle_turn(raw_input: str, context_summary: str, recent_turns: list[tuple[
         # was just the first path that needed it.
         return TurnResult(terminal_state="out_of_scope", prose=chat.output.message, debug={"research_query": chat.output.topic})
 
+    # classification == "answerable"
+    if settings.use_router_agent:
+        return _run_research_router(router_output)
     return _run_research(raw_input, context_summary, recent_turns)
 
 
@@ -203,10 +233,11 @@ def _run_research(
     recent_turns: list[tuple[str, str]],
     force_topic: str | None = None,
 ) -> TurnResult:
-    """The full translator -> retrieve -> live_search -> broaden -> rerank -> rank ->
-    writer -> citation_checker chain. Called for "answerable" classifications directly,
+    """translator -> _search_and_write. Called for "answerable" classifications directly,
     and ALSO for "practical_support" ones (see above) so a practical need connected to a
-    condition still gets checked against the literature, not routed past it.
+    condition still gets checked against the literature, not routed past it. Only used
+    when settings.use_router_agent is False — see _run_research_router for the merged-
+    agent equivalent, and _search_and_write for the shared chain both delegate to.
 
     force_topic: only set by the practical_support caller — forwarded to
     translator.translate so it never bails to needs_clarification on this path (see the
@@ -219,9 +250,39 @@ def _run_research(
             prose=trans.output.clarifying_question,
             clarification_options=trans.output.clarification_options,
         )
-    research_query = trans.output.research_query
-    reflection = trans.output.reflection
-    log.stage("translator", f"research_query={research_query!r}")
+    log.stage("translator", f"research_query={trans.output.research_query!r}")
+    return _search_and_write(trans.output.research_query, trans.output.reflection)
+
+
+def _run_research_router(route_output) -> TurnResult:
+    """Router equivalent of _run_research — the router (agents/router.py) already did
+    translator's job in the same call that classified the message, so this skips straight
+    to the shared chain using its research_query/reflection/alt_query. Only reachable when
+    settings.use_router_agent is True.
+
+    Defensive fallback: the router's own prompt instructs it to never set
+    needs_clarification for practical_support, but if it does anyway (a model not
+    following instructions is always possible), this still returns needs_clarification
+    honestly rather than forcing a query that was never actually formed — the caller
+    (practical_support branch) already handles a non-"answered" result by falling back to
+    resources-only, same as the old path's behavior when translator couldn't form a query."""
+    if route_output.needs_clarification:
+        log.stage("router", "needs_clarification", style="cyan")
+        return TurnResult(
+            terminal_state="needs_clarification",
+            prose=route_output.clarifying_question,
+            clarification_options=route_output.clarification_options,
+        )
+    log.stage("router", f"research_query={route_output.research_query!r}")
+    return _search_and_write(route_output.research_query, route_output.reflection, alt_query=route_output.alt_query or None)
+
+
+def _search_and_write(research_query: str, reflection: str, alt_query: str | None = None) -> TurnResult:
+    """The shared retrieve -> live_search -> broaden -> rerank -> rank -> writer ->
+    citation_checker chain — everything past "a research_query and reflection exist,"
+    regardless of which agent produced them. alt_query: a pre-computed widened query (from
+    agents/router.py) — when given, the broaden step uses it directly instead of calling
+    agents/broadener.py, since the router already did that work in its one call."""
 
     def _no_evidence() -> TurnResult:
         # Checks research_query, never raw_input — §7.2's privacy boundary means nothing
@@ -250,7 +311,16 @@ def _run_research(
 
         is_thin = len(distinct_papers) < THIN_COVERAGE_THRESHOLD
         is_low_relevance = top_similarity < THIN_SIMILARITY_THRESHOLD
-        if is_thin or is_low_relevance:
+        # Live search only on the FIRST pass, not after broadening — measured, repeated
+        # evidence (scripts/measure_pipeline_timing.py, every practical_support run
+        # tested) showed the second live search, on the broadened query, finding zero new
+        # papers every single time: broadening one step out rarely changes what PubMed/
+        # Semantic Scholar's keyword index actually has, so re-querying both live sources
+        # again was consistently 4-10s of pure waste. The broadened query still gets a
+        # fresh vector retrieve() against whatever the FIRST live search already added —
+        # this only skips searching PubMed/Semantic Scholar a second time in the same
+        # turn, it doesn't skip using what the first search found.
+        if (is_thin or is_low_relevance) and broaden_attempt == 0:
             # Coverage is measured in distinct papers AND relevance, not chunk count alone
             # — 20 chunks from 2 papers is still thin, but so is 8 papers that are merely
             # loosely on-topic rather than actually relevant to this specific question. A
@@ -280,9 +350,14 @@ def _run_research(
             break  # widened as far as the cap allows — proceed with whatever this found;
             # the len(candidates) check right below is what actually falls back honestly
 
-        widened = broadener.broaden(research_query)
-        log.stage("broaden", f"{research_query!r} -> {widened.output.broadened_query!r}", style="magenta")
-        research_query = widened.output.broadened_query
+        if alt_query:
+            widened_query = alt_query
+            log.stage("broaden", f"{research_query!r} -> {widened_query!r} (router-provided, no extra call)", style="magenta")
+        else:
+            widened = broadener.broaden(research_query)
+            widened_query = widened.output.broadened_query
+            log.stage("broaden", f"{research_query!r} -> {widened_query!r}", style="magenta")
+        research_query = widened_query
         live_contexts = {}  # discard the narrower query's live-search results; not relevant to the new one
 
     if len(candidates) < MIN_CANDIDATES_FOR_ANSWER:
@@ -334,9 +409,30 @@ def _run_research(
         {"chunk_id": c.chunk_id, "paper_id": c.paper_id, "text": c.text} for c in ranked_chunks
     ]
 
-    draft = writer.write(research_query, writer_input)
+    # Streamed — a live, unverified preview so the ~10-14s writer call (measured the
+    # single biggest cost in a typical turn, see scripts/measure_pipeline_timing.py)
+    # doesn't sit blank the whole time. Nothing shown via log.draft() is ever treated as
+    # final — the real answer is still built the exact same way afterward, from
+    # citation_checker-verified citations only (there's no regeneration retry anymore —
+    # see the citation_checker call below — so this is now the only writer call a turn
+    # ever makes).
+    _drafted_sentence_indices: set[int] = set()
+    _drafted_opening = False
+
+    def _on_writer_partial(partial: dict) -> None:
+        nonlocal _drafted_opening
+        opening_text = partial.get("opening")
+        if opening_text and not _drafted_opening:
+            log.draft(opening_text)
+            _drafted_opening = True
+        for i, c in enumerate(partial.get("citations") or []):
+            sentence = c.get("sentence") if isinstance(c, dict) else None
+            if sentence and i not in _drafted_sentence_indices:
+                log.draft(sentence)
+                _drafted_sentence_indices.add(i)
+
+    draft = writer.write(research_query, writer_input, on_partial=_on_writer_partial)
     opening = draft.output.opening
-    prose = draft.output.prose
     citations = draft.output.citations
     log.stage("writer", f"{len(citations)} citations", style="green")
 
@@ -398,45 +494,37 @@ def _run_research(
         )
 
     supplied_chunks = [{"chunk_id": c.chunk_id, "text": c.text} for c in ranked_chunks]
-    for attempt in range(2):  # one retry, capped (§2.5)
-        mechanical_flags = citation_checker.check_mechanical(citations, supplied_chunks)
-        flagged_numbers = {f.citation_number for f in mechanical_flags}
-        verified = [c for c in citations if c.citation_number not in flagged_numbers]
-        semantic_flags = citation_checker.check_semantic(verified) if verified else []
+    # Single pass, immediate salvage on any flag — no regeneration retry. This used to be
+    # two attempts (flag -> full writer regeneration with the flags as feedback -> recheck
+    # -> salvage only if STILL flagged), which real timing data showed costing ~8-12s
+    # whenever it fired (a full second writer call plus a full second citation_checker
+    # call) — the single biggest discretionary cost left in the pipeline once live search
+    # stopped double-firing (see this function's live_search comment above). Explicit,
+    # deliberate tradeoff, not a free win: this never shows unverified content either way
+    # (salvage always drops what's flagged, exactly as before), but it no longer gives the
+    # writer a chance to FIX a flagged citation before falling back to dropping it, so some
+    # answers will carry fewer citations than the old two-attempt version would have kept.
+    # Chosen explicitly over keeping the retry, to hold a hard ~30s ceiling on
+    # practical_support rather than accept the old occasional 35-45s tail.
+    mechanical_flags = citation_checker.check_mechanical(citations, supplied_chunks)
+    flagged_numbers = {f.citation_number for f in mechanical_flags}
+    verified = [c for c in citations if c.citation_number not in flagged_numbers]
+    semantic_flags = citation_checker.check_semantic(verified) if verified else []
 
-        all_flags = mechanical_flags + semantic_flags
-        log.stage(
-            "citation_checker",
-            f"attempt {attempt + 1}: {len(all_flags)} flags",
-            style="yellow" if all_flags else "green",
-        )
-        for f in all_flags:
-            log.flag(f.reason, f.sentence, f.quote)
-        if not all_flags:
-            return _build_answered(citations)
+    all_flags = mechanical_flags + semantic_flags
+    log.stage(
+        "citation_checker",
+        f"{len(all_flags)} flags",
+        style="yellow" if all_flags else "green",
+    )
+    for f in all_flags:
+        log.flag(f.reason, f.sentence, f.quote)
+    if not all_flags:
+        return _build_answered(citations)
 
-        if attempt == 0:
-            # Pass the actual flags in — the retry must know what was wrong to fix it,
-            # not just re-roll the same call blindly (§7.6; this was the real bug behind
-            # 3 flags becoming 5 on the previous, unguided retry).
-            flag_pairs = [(f.sentence, f.quote, f.reason) for f in all_flags]
-            draft = writer.write(research_query, writer_input, previous_flags=flag_pairs)
-            opening = draft.output.opening
-            prose = draft.output.prose
-            citations = draft.output.citations
-        else:
-            # Final attempt still has flags. Real testing (both a dense-anatomy query and
-            # an unrelated one) showed the writer reliably reintroduces one uncited-but-
-            # true specific per regeneration, regardless of retry or temperature — a model
-            # tendency further retries don't fix. Rather than discard an otherwise-verified
-            # answer over one bad sentence, salvage: drop only the still-flagged sentences
-            # (and their citations) and answer with what survived verification intact.
-            # Falls back to no_evidence only if literally nothing survives.
-            flagged_final_numbers = {f.citation_number for f in all_flags}
-            salvaged_citations = [c for c in citations if c.citation_number not in flagged_final_numbers]
-            if not salvaged_citations:
-                return _no_evidence()
-            log.warn(f"salvage: dropped {len(flagged_final_numbers)} flagged citation(s), kept {len(salvaged_citations)}")
-            return _build_answered(salvaged_citations)
-
-    return _no_evidence()
+    flagged_numbers = {f.citation_number for f in all_flags}
+    salvaged_citations = [c for c in citations if c.citation_number not in flagged_numbers]
+    if not salvaged_citations:
+        return _no_evidence()
+    log.warn(f"salvage: dropped {len(flagged_numbers)} flagged citation(s), kept {len(salvaged_citations)}")
+    return _build_answered(salvaged_citations)

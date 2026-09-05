@@ -1,8 +1,15 @@
 """Agent 2d — Psychometric validation auditor. See docs/agents.md §2d.
 
-Ingest, one call per field per paper. 9 fields (working spec §5.3). Route a paper here
-only if its primary purpose is characterising the instrument itself, not merely using an
-already-validated instrument to study something else.
+Ingest, one call per paper covering EVERY applicable field at once (v2 — was one call per
+field per paper; 9 fields, working spec §5.3). Route a paper here only if its primary
+purpose is characterising the instrument itself, not merely using an already-validated
+instrument to study something else. The field list is identical across every psychometric
+paper (it comes straight from quality_fields, not anything paper-specific), so it's also
+the STATIC part of this prompt — putting it in the system message, ahead of the paper's own
+full text in the user message, means the prefix is byte-identical across different papers'
+audit calls, not just reused within one call. That ordering is what makes provider-side
+prompt caching apply here at all (see agents/base.py's module docstring on prefix
+ordering).
 """
 
 from typing import Optional
@@ -12,16 +19,16 @@ from pydantic import BaseModel
 from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
 from neurodiversity.db.models import QualityCheckStatus
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"  # v2 = plural fields, one call per paper instead of one per field
 
-SYSTEM_PROMPT_TEMPLATE = """You check whether a psychometric validation paper's full text reports one
-specific methodological quality field. You are given the field name, why it matters, and the
-paper's full text.
+SYSTEM_PROMPT_TEMPLATE = """You check whether a psychometric validation paper's full text reports each of the
+following methodological quality fields. You are given the full list up front, then the paper's
+full text.
 
-Field being checked: {field_name}
-Why this field matters: {field_rationale}
+Fields to check:
+{field_list}
 
-Output:
+For EACH field above, return one verdict, in the same order:
 - verdict: "reported" if the full text explicitly addresses this field, "absent" if the
   full text was searched and does not address it, "not_applicable" if this field does not
   apply to this paper's specific design, "unchecked" only if the provided text is
@@ -30,24 +37,38 @@ Output:
   other verdict. Do not paraphrase — copy the sentence exactly as it appears in the source.
 - location: the section the snippet came from (e.g., "Methods", "Supplementary"), or null.
 
+Return exactly one verdict per field listed above — do not skip any, do not add any, and
+keep them in the same order so they can be matched back up by position.
+
 Never guess. If you cannot find a supporting sentence, the verdict is "absent," not
-"reported" with a fabricated or paraphrased snippet."""
+"reported" with a fabricated or paraphrased snippet. "unchecked" means the text you were
+given wasn't enough to tell — not that the paper itself was vague; a paper that is
+genuinely vague about a field is "absent," not "unchecked.\""""
 
 
-class QualityVerdict(BaseModel):
+class FieldVerdict(BaseModel):
+    field_id: str
     verdict: QualityCheckStatus
     evidence_snippet: Optional[str] = None
     location: Optional[str] = None
 
 
-def audit_field(full_text: str, field_name: str, field_rationale: str) -> AgentResult:
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-        field_name=field_name, field_rationale=field_rationale
+class AuditResult(BaseModel):
+    verdicts: list[FieldVerdict]
+
+
+def audit_fields(full_text: str, fields: list[dict]) -> AgentResult:
+    """fields: [{"id", "name", "rationale"}, ...] — every quality_fields row applicable to
+    this paper's design_type, in one call instead of one call each."""
+    field_list = "\n".join(
+        f"{i}. field_id=\"{f['id']}\" — {f['name']}\n   Why it matters: {f['rationale']}"
+        for i, f in enumerate(fields, start=1)
     )
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(field_list=field_list)
     return run_agent(
         system_prompt=system_prompt,
         user_message=f"Full text:\n\n{full_text}",
-        output_model=QualityVerdict,
+        output_model=AuditResult,
         prompt_version=PROMPT_VERSION,
         model=MODEL_MINI,
         temperature=0.0,

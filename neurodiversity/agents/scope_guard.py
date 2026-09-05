@@ -1,9 +1,18 @@
 """Agent 5 — Scope guard. See docs/agents.md §5.
 
-Query path, every turn, first step. Fails closed on ambiguity — the tie-break order
-(distress > practical_support > greeting > out_of_domain > answerable) is what makes
-"ambiguous routes to the more restrictive category, not silently to answerable" (§7.1)
-enforceable rather than aspirational.
+Query path, every turn, runs concurrently with agents/danger.py (pipeline.py), not after
+it. Fails closed on ambiguity — the tie-break order (practical_support > greeting >
+out_of_domain > answerable) is what makes "ambiguous routes to the more restrictive
+category, not silently to answerable" (§7.1) enforceable rather than aspirational.
+
+distress is NOT one of this agent's categories anymore — it moved to its own dedicated
+agent (agents/danger.py). Real, controlled testing found gpt-4o-mini reliably
+misclassifying plain grief ("I lost my cat") as distress, 3/3, when it had to weigh
+distress against four other competing categories in one call — and the SAME model got
+every one of the same cases right once it had exactly one question to answer with nothing
+else competing for the classification. The bug was never really about model capability;
+it was about distress sharing a decision with four unrelated categories. See danger.py's
+own module docstring for the fix and the re-verified test results.
 
 There is no diagnostic-refusal category anymore. Earlier this asked the system to refuse
 outright ("do I have ADHD" -> a flat "this system can't diagnose you" message) — dropped
@@ -32,26 +41,23 @@ through to out_of_domain). Folded into this same classification call instead: th
 already has to read the message anyway, and recognizing a greeting — typos, variants, and
 all — is exactly the kind of judgment call a keyword list can't make but a model can.
 
-Runs on gpt-4o, not the gpt-4o-mini used everywhere else in this system — a deliberate,
-isolated exception. Real, controlled testing (identical prompt, only the model changed)
-found gpt-4o-mini reliably misclassifying plain, unambiguous grief/loss statements ("I
-lost my cat", "I just lost my cat") as distress, 3/3 on every phrasing tried, and two
-increasingly explicit prompt rewrites — including listing that exact phrase as a named
-non-example — did not fix it. gpt-4o got every one of the same test cases right with the
-identical prompt. This isn't a wording problem; it's model-specific behavior on this one
-judgment call, and distress is the working spec's own "highest-risk terminal state in the
-system" (§9.2) — not a place to keep tuning prompts around a smaller model's limitation.
-No latency cost either: gpt-4o measured faster than gpt-4o-mini on this exact call in the
-same test.
+Runs on gpt-4o-mini, same as most other agents — no longer a pinned exception. With
+distress removed (the actual root cause above), the remaining four categories were
+re-tested head-to-head, identical prompt, gpt-4o-mini vs gpt-4o: 9/9 identical
+classifications across the previously-hard cases (diagnostic questions, bullying with and
+without an explicit diagnosis disclosure, grief non-examples, greeting typos), each
+repeated 3x for the trickiest cases with zero variance. There was never a documented
+gpt-4o-mini failure on THESE categories — the pin existed only because distress shared the
+call with them.
 """
 
 from enum import Enum
 
 from pydantic import BaseModel
 
-from neurodiversity.agents.base import AgentResult, run_agent
+from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent
 
-PROMPT_VERSION = "v9"
+PROMPT_VERSION = "v10"  # v10 = distress removed (own agent now, see danger.py)
 
 SYSTEM_PROMPT = """Classify this message into exactly one category:
 
@@ -67,24 +73,6 @@ SYSTEM_PROMPT = """Classify this message into exactly one category:
   refusing to look at the question at all): every version of this question gets a real,
   literature-backed answer describing what the criteria/evidence actually say, framed
   generally, never as a personal verdict about the specific person asking.
-- distress: requires an AFFIRMATIVE signal of danger to the person — explicit or strongly
-  implied self-harm, suicidal ideation, or language stating they cannot go on / cannot
-  cope / it's not worth continuing. This is a bright-line, mechanical test, not a
-  judgment call about how sad a message sounds: if no such signal is present, the message
-  is NOT distress, full stop — this is never an ambiguous or close call, and the general
-  "prefer the more restrictive category when ambiguous" rule below does not apply to it,
-  because there is no ambiguity to resolve. Grief, sadness, loss, frustration, or
-  exhaustion — about anything, including a pet, a job, a relationship, or life in general
-  — is NOT distress by itself, no matter how emotionally loaded the wording is, unless an
-  actual danger signal (as defined above) is also present. Examples that are NOT
-  distress: "I lost my cat", "I just lost my cat", "I lost my job and I'm devastated",
-  "everything feels so hard right now", "I'm exhausted and don't know how much more I can
-  take of this week" (venting/exhaustion, not danger). Examples that ARE distress: "I
-  don't want to be here anymore", "I can't do this anymore, what's the point of going
-  on", "I've been thinking about ending things". When in doubt, the absence of an
-  explicit or strongly implied danger signal means classify as something else entirely
-  (out_of_domain, practical_support, or answerable, per the message's actual content) —
-  do not round an ordinary sad statement up to distress "to be safe."
 - practical_support: a real, practical need connected to being autistic/ADHD/dyslexic/
   dyspraxic/having Tourette's that is NOT researchable against the literature and NOT a
   request for diagnosis — workplace rights or discrimination, harassment, bullying or
@@ -100,8 +88,7 @@ SYSTEM_PROMPT = """Classify this message into exactly one category:
   This does NOT extend to generic sadness, grief, exhaustion, loneliness, or venting with
   no named problem type of that kind — "I am so sad", "I lost my cat", "I feel awful today"
   are NOT practical_support (there is no organization or resource that answers a bare
-  emotion), and are NOT distress either absent a danger signal (see distress's own
-  definition) — these fall through to out_of_domain, where a normal, warm conversational
+  emotion) — these fall through to out_of_domain, where a normal, warm conversational
   reply is the right response, not a resource list. The test is: does the message name a
   concrete problem category this system actually has a support pathway for? If yes,
   practical_support. If it's just an unanchored feeling with nothing to act on, it isn't.
@@ -132,7 +119,7 @@ SYSTEM_PROMPT = """Classify this message into exactly one category:
   reply is the correct response, not a forced categorization.
 
 If the message is ambiguous between categories, prefer the more restrictive one in this
-order: distress > practical_support > greeting > out_of_domain > answerable. This does not
+order: practical_support > greeting > out_of_domain > answerable. This does not
 make a stated diagnosis ambiguous by itself — ambiguity means genuine uncertainty about
 which category fits, not the mere presence of a personal disclosure alongside an otherwise
 clear, researchable question. It also does not make a bare unanchored feeling (see above)
@@ -151,7 +138,6 @@ as normal — do not let a prior topic pull an unrelated new message into its ca
 
 class ScopeClassification(str, Enum):
     answerable = "answerable"
-    distress = "distress"
     practical_support = "practical_support"
     greeting = "greeting"
     out_of_domain = "out_of_domain"
@@ -192,8 +178,6 @@ def classify(raw_input: str, context_summary: str = "", recent_turns: list[tuple
         user_message=user_message,
         output_model=ScopeResult,
         prompt_version=PROMPT_VERSION,
-        # No model= override — uses run_agent's gpt-4o default. See module docstring for
-        # why this one agent is a deliberate exception to the gpt-4o-mini tiering used
-        # everywhere else: a real, reproducible gpt-4o-mini failure on distress detection.
+        model=MODEL_MINI,
         temperature=0.0,
     )

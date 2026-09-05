@@ -1,31 +1,41 @@
 """Live, per-question paper search — decided in place of a pre-built corpus.
 
-A real pre-built, pre-audited corpus (§5.1's ~500-per-condition design) isn't affordable
-at the current budget. Instead: when a question comes in, search PubMed directly for it,
-cheaply ingest (fetch, chunk, embed — no GPT-4o call) everything found, let vector search
-determine which of those papers are actually relevant, and only then spend the expensive
-classify+audit calls (Phase B, §5.8) on that narrowed-down subset — not on every paper
-the search happened to return. This is the same two-phase split the project already
-committed to for the pre-built corpus, just triggered synchronously inside a live turn
-instead of by a background worker.
+Nothing here is a pre-built, pre-audited corpus (§5.1's ~500-per-condition design isn't
+affordable at the current budget, and was dropped for exactly that reason). When a
+question comes in, this searches live sources directly for it, cheaply ingests (fetch,
+chunk, embed — no GPT-4o call) everything found, lets vector search determine which of
+those papers are actually relevant, and only then spends the expensive classify+audit
+calls (Phase B, §5.8) on that narrowed-down subset — not on every paper the search
+happened to return. This is the same two-phase split the project already committed to for
+the (abandoned) pre-built corpus, just triggered synchronously inside a live turn instead
+of by a background worker. query/retrieval.py's own vector search over already-ingested
+chunks is a CACHE of prior live searches, not a separate static corpus — the same paper,
+once fetched here, is never re-fetched (pubmed_id dedup below), so a repeated or related
+question mostly hits that cache. It never substitutes for running a real search here.
+
+Two independent sources, run concurrently, merged by pubmed_id before ingestion: PubMed
+(pubmed.py) and Semantic Scholar (semantic_scholar.py). Added after real testing showed
+Semantic Scholar's independently-indexed search surfaces genuinely relevant papers PubMed
+missed for the identical query — wider venue coverage (conference proceedings, preprints,
+journals PubMed doesn't index), different ranking. Semantic Scholar results with no PubMed
+ID are dropped (see semantic_scholar.py's own docstring) — this system's whole schema is
+built around pubmed_id as the dedup/upsert key.
 
 This is a real trade against the original architecture, worth being honest about: §4's
 determinism guarantee ("the same question produces the same answer on any run") doesn't
-hold here the way it would against a fixed corpus, since PubMed's live results can shift
-between runs, and this adds real latency to the turn (a live search + embed, not just a
+hold here the way it would against a fixed corpus, since live results can shift between
+runs, and this adds real latency to the turn (two live searches + embed, not just a
 lookup). Accepted deliberately given the budget — this is a single-developer prototype,
 not a production system serving many people yet.
-
-Already-known papers are never reprocessed (ingest_cheap's own pubmed_id check handles
-that), so a repeated or related question mostly hits cache and costs little.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from neurodiversity import console_log as log
 from neurodiversity.db.client import get_service_client
+from neurodiversity.db.models import Paper
 from neurodiversity.ingestion.process_paper import IngestResult, classify_and_audit, ingest_cheap
-from neurodiversity.ingestion.sources import pubmed
+from neurodiversity.ingestion.sources import pubmed, semantic_scholar
 
 MAX_LIVE_RESULTS = 8
 # Real testing found turns taking far longer than expected — traced to this module
@@ -41,15 +51,43 @@ MAX_LIVE_RESULTS = 8
 MAX_CONCURRENT_PAPERS = 8
 
 
+def _search_pubmed(research_query: str, max_results: int) -> list[Paper]:
+    pmids = pubmed.esearch_free_text(research_query, retmax=max_results)
+    log.sub(f"pubmed: {len(pmids)} PMIDs for {research_query!r}: {pmids}", style="magenta")
+    return pubmed.efetch(pmids) if pmids else []
+
+
+def _search_semantic_scholar(research_query: str, max_results: int) -> list[Paper]:
+    try:
+        papers = semantic_scholar.search_papers(research_query, limit=max_results)
+    except Exception as exc:
+        log.warn(f"semantic_scholar search failed: {exc}")
+        return []
+    log.sub(f"semantic_scholar: {len(papers)} papers with a PubMed ID for {research_query!r}", style="magenta")
+    return papers
+
+
 def ingest_cheap_for_query(research_query: str, max_results: int = MAX_LIVE_RESULTS) -> dict[str, IngestResult]:
     """Phase A only — no GPT-4o call. Returns paper_id -> IngestResult for later Phase B use."""
     db = get_service_client()
-    pmids = pubmed.esearch_free_text(research_query, retmax=max_results)
-    log.sub(f"{len(pmids)} PMIDs for {research_query!r}: {pmids}", style="magenta")
-    if not pmids:
+
+    # Two independent sources, run concurrently — neither waits on the other.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pubmed_future = pool.submit(_search_pubmed, research_query, max_results)
+        s2_future = pool.submit(_search_semantic_scholar, research_query, max_results)
+        pubmed_papers = pubmed_future.result()
+        s2_papers = s2_future.result()
+
+    # Merged by pubmed_id — PubMed's own metadata wins on overlap (it's already
+    # filtered through SHARED_FILTERS' quality gate; Semantic Scholar's copy of the same
+    # paper isn't a second opinion worth keeping once we have PubMed's).
+    papers_by_pmid: dict[str, Paper] = {p.pubmed_id: p for p in s2_papers if p.pubmed_id}
+    papers_by_pmid.update({p.pubmed_id: p for p in pubmed_papers if p.pubmed_id})
+    papers = list(papers_by_pmid.values())
+    log.sub(f"{len(papers)} distinct papers across both sources", style="magenta")
+    if not papers:
         return {}
 
-    papers = pubmed.efetch(pmids)
     results = {}
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_PAPERS) as pool:
         futures = {pool.submit(ingest_cheap, db, paper): paper for paper in papers}

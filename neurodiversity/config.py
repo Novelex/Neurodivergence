@@ -14,9 +14,16 @@ class Settings(BaseSettings):
     semantic_api_key: str = ""
     crossref_contact_email: str = ""
     openai_api_key: str = ""
+    openrouter_api_key: str = ""
     supabase_url: str = ""
     supabase_anon_key: str = ""
     supabase_service_role_key: str = ""
+
+    # Feature flag, default OFF — see agents/router.py's module docstring. Flip to true in
+    # .env (USE_ROUTER_AGENT=true) to route through the merged scope_guard+translator+
+    # broadener agent instead of the existing, separately-tested three-call path. Clean,
+    # instant rollback: flip back to false, no code change needed.
+    use_router_agent: bool = False
 
 
 settings = Settings()

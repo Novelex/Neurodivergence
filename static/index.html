@@ -194,6 +194,7 @@ const STAGE_STYLE = {
   success: { icon: "✓", color: "text-green-600" },
   warn:    { icon: "⚠", color: "text-amber-600" },
   flag:    { icon: "✗", color: "text-red-500" },
+  draft:   { icon: "✍", color: "text-slate-400 italic" },
 };
 
 function addProgressLine(loading, text, kind = "stage") {
@@ -211,6 +212,11 @@ function describeProgressEvent(event) {
     case "success": return { text: event.text, kind: "success" };
     case "warn":    return { text: event.text, kind: "warn" };
     case "flag":    return { text: `citation check flagged something, fixing it — ${event.reason}`, kind: "flag" };
+    // Unverified — the writer is still generating. Shown as a running, italic preview
+    // in the same transient progress area as every other stage line, never as the final
+    // answer bubble; the real, citation-checked text replaces all of this once the
+    // "result" event arrives (see runTurnStreaming below).
+    case "draft":   return { text: event.text, kind: "draft" };
     default:        return null;
   }
 }

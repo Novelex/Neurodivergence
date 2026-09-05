@@ -3,12 +3,14 @@
 ingest_cheap: fetch, license-gate, chunk+embed, store bibliographic + chunks. No GPT-4o
 call at all — this is Phase A, safe to run on every paper a search finds.
 
-classify_and_audit: design classification + one representative audit field. This is
-Phase B — the expensive part — and should only run on papers that actually survive
-retrieval as relevant, not on everything a search happens to find. Batch scripts
-(scripts/phase1_e2e_test.py) can call both back to back; the live query-time search
-(query/live_search.py) defers classify_and_audit until vector search narrows down which
-papers actually matter, which is the whole point of the split.
+classify_and_audit: design classification + every applicable quality field, audited in one
+call (v2 — previously audited exactly one hardcoded field per design_type, regardless of
+how many rows actually existed in quality_fields; a paper could have 13 applicable fields
+and only 1 ever got checked). This is Phase B — the expensive part — and should only run on
+papers that actually survive retrieval as relevant, not on everything a search happens to
+find. Batch scripts (scripts/phase1_e2e_test.py) can call both back to back; the live
+query-time search (query/live_search.py) defers classify_and_audit until vector search
+narrows down which papers actually matter, which is the whole point of the split.
 """
 
 import os
@@ -23,11 +25,11 @@ from neurodiversity.ingestion.embeddings import embed_chunks
 from neurodiversity.ingestion.sources import pmc
 
 AUDITOR_ROUTING = {
-    DesignType.imaging_case_control: (imaging, "multiple_comparisons_correction"),
-    DesignType.trial: (trial, "randomisation_method"),
-    DesignType.qualitative: (qualitative, "sampling_strategy_rationale"),
-    DesignType.psychometric_validation: (psychometric, "internal_consistency_reported"),
-    DesignType.observational_cohort: (cohort, "baseline_confounders_adjusted"),
+    DesignType.imaging_case_control: imaging,
+    DesignType.trial: trial,
+    DesignType.qualitative: qualitative,
+    DesignType.psychometric_validation: psychometric,
+    DesignType.observational_cohort: cohort,
 }
 
 
@@ -116,11 +118,11 @@ def ingest_cheap(db, paper: Paper) -> IngestResult:
     return IngestResult(paper_id, False, usable_full_text, methods_excerpt, paper.title, paper.abstract or "")
 
 
-def classify_and_audit(db, ingest_result: IngestResult) -> tuple[str, str | None]:
+def classify_and_audit(db, ingest_result: IngestResult) -> tuple[str, list[str]]:
     """Phase B. The expensive part — call only for papers that survived retrieval as relevant."""
     if ingest_result.already_processed:
         facts = db.table("study_facts").select("design_type").eq("paper_id", ingest_result.paper_id).execute().data
-        return facts[0]["design_type"], None
+        return facts[0]["design_type"], []
 
     classification = classify(
         ingest_result.title, ingest_result.abstract, ingest_result.methods_excerpt or ingest_result.abstract
@@ -133,37 +135,57 @@ def classify_and_audit(db, ingest_result: IngestResult) -> tuple[str, str | None
         on_conflict="paper_id",
     ).execute()
 
-    audited_field = None
+    audited_fields: list[str] = []
     if ingest_result.usable_full_text and design_type in AUDITOR_ROUTING:
-        auditor_module, field_id = AUDITOR_ROUTING[design_type]
-        field_row = db.table("quality_fields").select("*").eq("id", field_id).execute().data
-        if field_row:
-            field_row = field_row[0]
-            verdict: AgentResult = auditor_module.audit_field(
-                ingest_result.usable_full_text, field_row["name"], field_row["rationale"]
+        auditor_module = AUDITOR_ROUTING[design_type]
+        # Every quality_fields row applicable to this design_type, not just one hardcoded
+        # field — design_type=any(applies_to) picks up the fields shared across auditors
+        # too (preregistration, data_availability). Ordered by display_order so the field
+        # list — and therefore the cached prompt prefix — is identical every time this
+        # design_type is audited, regardless of which paper it's for.
+        field_rows = (
+            db.table("quality_fields")
+            .select("*")
+            .contains("applies_to", [design_type.value])
+            .order("display_order")
+            .execute()
+            .data
+        )
+        if field_rows:
+            result: AgentResult = auditor_module.audit_fields(ingest_result.usable_full_text, field_rows)
+            verdicts_by_field = {v.field_id: v for v in result.output.verdicts}
+            rows_to_upsert = []
+            for field_row in field_rows:
+                verdict = verdicts_by_field.get(field_row["id"])
+                if verdict is None:
+                    log.warn(f"auditor returned no verdict for field {field_row['id']!r} — skipping")
+                    continue
+                rows_to_upsert.append(
+                    {
+                        "paper_id": ingest_result.paper_id,
+                        "field_id": field_row["id"],
+                        "status": verdict.verdict.value,
+                        "evidence_snippet": verdict.evidence_snippet,
+                        "location": verdict.location,
+                        "model": result.model,
+                        "prompt_version": result.prompt_version,
+                    }
+                )
+                audited_fields.append(field_row["id"])
+            if rows_to_upsert:
+                db.table("quality_checks").upsert(rows_to_upsert, on_conflict="paper_id,field_id").execute()
+            log.sub(
+                f"[{auditor_module.__name__.split('.')[-1]}] {len(audited_fields)}/{len(field_rows)} fields audited in 1 call",
+                style="magenta",
             )
-            log.sub(f"[{auditor_module.__name__.split('.')[-1]}] {field_id}: verdict = {verdict.output.verdict.value}", style="magenta")
-            db.table("quality_checks").upsert(
-                {
-                    "paper_id": ingest_result.paper_id,
-                    "field_id": field_id,
-                    "status": verdict.output.verdict.value,
-                    "evidence_snippet": verdict.output.evidence_snippet,
-                    "location": verdict.output.location,
-                    "model": verdict.model,
-                    "prompt_version": verdict.prompt_version,
-                },
-                on_conflict="paper_id,field_id",
-            ).execute()
-            audited_field = field_id
 
-    return design_type.value, audited_field
+    return design_type.value, audited_fields
 
 
-def process_paper(db, paper: Paper) -> tuple[str, str, str, str | None]:
+def process_paper(db, paper: Paper) -> tuple[str, str, str, list[str]]:
     """Convenience wrapper: both phases back to back. Used by the batch script, where
     every found paper is worth fully processing — unlike live search, there's no
     "wait and see if it's relevant" step for a pre-planned condition-based crawl."""
     ingest_result = ingest_cheap(db, paper)
-    design_type, audited_field = classify_and_audit(db, ingest_result)
-    return paper.pubmed_id, paper.title, design_type, audited_field
+    design_type, audited_fields = classify_and_audit(db, ingest_result)
+    return paper.pubmed_id, paper.title, design_type, audited_fields
