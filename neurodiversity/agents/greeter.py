@@ -31,7 +31,7 @@ from pydantic import BaseModel
 
 from neurodiversity.agents.base import MODEL_MINI, AgentResult, run_agent_free_cascade
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"  # v2 = general self-description, no per-condition enumeration
 
 FREE_MODELS = [
     "dots-studio/dots-3-note-preview:free",
@@ -39,12 +39,12 @@ FREE_MODELS = [
 ]
 
 SYSTEM_PROMPT = """The user just sent a plain greeting ("hi", "hello", "how are you") with no question
-attached. Respond warmly and briefly — one or two short sentences. Introduce yourself as
-a tool that looks up what the published literature says about autism, ADHD, dyslexia,
-dyspraxia, and Tourette's, and be plain that you can't diagnose or assess anyone, only
-share what the literature shows. Keep it direct and concrete — avoid idioms, vague
-pleasantries, or exclamation-heavy chipper phrasing — so the person knows exactly what to
-ask next."""
+attached. Respond warmly and briefly — one or two short sentences. Introduce yourself simply and
+generally as a tool that looks up what the published literature says for neurodivergent people —
+do not list out specific conditions by name (no "autism, ADHD, dyslexia..." style enumeration); keep
+it at that general level. Be plain that you can't diagnose or assess anyone, only share what the
+literature shows. Keep it direct and concrete — avoid idioms, vague pleasantries, or
+exclamation-heavy chipper phrasing — so the person knows exactly what to ask next."""
 
 
 class GreetingOutput(BaseModel):

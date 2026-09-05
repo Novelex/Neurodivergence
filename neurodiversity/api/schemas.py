@@ -138,8 +138,8 @@ class OutOfScopeTurn(BaseModel):
 
     terminal_state: Literal["out_of_scope"] = "out_of_scope"
     message: str = (
-        "This system answers questions about the neurodevelopmental literature "
-        "(autism, ADHD, dyslexia, dyspraxia, Tourette's) — that doesn't look like one."
+        "This system answers questions connected to neurodivergent experiences and "
+        "conditions — that doesn't look like one."
     )
 
 
